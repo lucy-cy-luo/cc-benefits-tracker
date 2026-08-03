@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benefits Tracker</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="nav">
+    <div class="wrap nav-inner">
+      <div class="nav-top">
+        <div class="brand">Benefits Tracker <small id="today"></small></div>
+        <div class="nav-actions">
+          <a class="themebtn" href="/digest" target="_blank" rel="noopener">digest</a>
+          <button class="themebtn" id="themebtn" type="button">◐ theme</button>
+        </div>
+      </div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+  </div>
+
+  <main class="wrap" id="view" aria-live="polite">
+    <p class="loading">Loading…</p>
+  </main>
+
+  <footer class="wrap foot">
+    All data local to this Mac · database outside Google Drive
+  </footer>
+
+<!-- Phase 2: the one external asset this app loads. Plaid Link has to be
+     hosted JS served from Plaid's own CDN — there's no self-contained way to
+     run their bank-auth flow. Everything else about this app stays local. -->
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

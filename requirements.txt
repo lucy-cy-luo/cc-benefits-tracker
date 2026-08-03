@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.5
+pyyaml==6.0.2
+python-dotenv==1.0.1
+python-multipart==0.0.20
+pytest==8.3.4
+httpx==0.28.1
+
+# --- Phase 2: Plaid auto-sync ---
+plaid-python==42.0.0
+keyring==25.7.0          # macOS Keychain access for the token-encryption key
+cryptography==50.0.0     # Fernet encryption of Plaid access tokens at rest

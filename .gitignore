@@ -1,0 +1,43 @@
+# Secrets — never commit. Present from commit #1.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Local database — contains your financial data. Never leaves this machine.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+
+# Real personal financial data (actual redemption history, dollar judgments
+# tied to real card products) — never goes to the public repo. The app code
+# is what's shared; your numbers aren't.
+config/catalog.yaml
+config/preferences.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Claude Code local tooling config — not part of the app
+.claude/
+
+# Google Drive sync artifacts
+*.gsheet
+.tmp.drivedownload/
+.tmp.driveupload/
