@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from app import matching
 
 DIGITAL_ENT = {
@@ -33,6 +35,50 @@ CSR_TRAVEL = {
     "cadence": "annual",
     "detection_hint": {"note": "Auto-applies to travel-category charges."},
 }
+
+
+class TestCardPaymentsAreNeverCandidates:
+    """Regression: real Amex data had "AUTOPAY PAYMENT - THANK YOU" (-$76.23)
+    scoring 0.3 against the Resy credit purely because the amount fit its
+    quarterly cap. Paying the bill is money-in like a credit, so the sign
+    test alone can't separate them."""
+
+    @pytest.mark.parametrize("name", [
+        "AUTOPAY PAYMENT - THANK YOU",
+        "ONLINE PAYMENT - THANK YOU",
+        "Mobile Payment Received",
+        "ELECTRONIC PAYMENT",
+    ])
+    def test_payment_descriptions_are_excluded(self, name):
+        assert matching.is_payment(name) is True
+        assert matching.is_candidate_transaction(name, -76.23) is False
+
+    def test_a_real_credit_is_still_a_candidate(self):
+        assert matching.is_candidate_transaction("AMEX Dining Credit", -10.00) is True
+
+    def test_payment_never_reaches_scoring_even_when_amount_fits(self):
+        # $76.23 fits Resy's $100 quarterly cap — the old bug exactly.
+        assert matching.is_candidate_transaction("AUTOPAY PAYMENT - THANK YOU", -76.23) is False
+
+
+class TestIssuerDescriptorPatterns:
+    """The credits post under Amex's own descriptor, not the merchant's —
+    these are the real strings observed on 2026-08-03."""
+
+    DIGITAL_ENT_REAL = dict(DIGITAL_ENT, detection_hint={
+        "merchant_patterns": ["PLATINUM DIGITAL ENTERTAINMENT", "HULU"]})
+
+    def test_issuer_descriptor_auto_matches(self):
+        result = matching.match_transaction(
+            "Platinum Digital Entertainment Credit", -8.00, date(2026, 7, 12),
+            [self.DIGITAL_ENT_REAL])
+        assert result.status == "auto_matched"
+        assert result.best.benefit_id == "amex_plat_digital_entertainment"
+
+    def test_merchant_name_still_matches_too(self):
+        result = matching.match_transaction("HULU", -8.00, date(2026, 7, 12),
+                                            [self.DIGITAL_ENT_REAL])
+        assert result.status == "auto_matched"
 
 
 class TestIsCandidateTransaction:

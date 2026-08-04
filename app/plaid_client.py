@@ -65,17 +65,28 @@ def reset_client() -> None:
     _client = None
 
 
-def create_link_token(card_id: str) -> str:
+def create_link_token(card_id: str, redirect_uri: str | None = None) -> str:
     """A Link token is single-use and tied to one card_id (Plaid's `client_user_id`
-    is repurposed here as the card, not a person — this app has one user)."""
+    is repurposed here as the card, not a person — this app has one user).
+
+    redirect_uri is required for OAuth institutions (Amex, Chase, and most
+    major banks in Production — Sandbox never needs it). It must exactly
+    match a URI registered in the Plaid Dashboard's allowed redirect URIs;
+    the bank's OAuth login redirects the browser there, and the frontend
+    resumes the same Link session on load (see resumePlaidOAuthIfNeeded in
+    app.js) rather than starting over.
+    """
     client = _get_client()
-    req = LinkTokenCreateRequest(
+    kwargs = dict(
         client_name="CC Benefits Tracker",
         language="en",
         country_codes=[CountryCode("US")],
         user=LinkTokenCreateRequestUser(client_user_id=card_id),
         products=[Products("transactions")],
     )
+    if redirect_uri:
+        kwargs["redirect_uri"] = redirect_uri
+    req = LinkTokenCreateRequest(**kwargs)
     resp = client.link_token_create(req)
     return resp["link_token"]
 

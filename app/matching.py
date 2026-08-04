@@ -36,6 +36,17 @@ ISSUER_CREDIT_RE_PARTS = [
     "adjustment", "offer credit", "auto-appli", "reimburs",
 ]
 
+# Paying your card bill also arrives as a negative (money-in) amount, so the
+# sign test alone can't tell it apart from a statement credit. Real data:
+# "AUTOPAY PAYMENT - THANK YOU" (-$76.23) was scoring 0.3 against the Resy
+# credit purely because the dollar figure happened to fit its quarterly cap.
+# A payment is never a benefit redemption, so it's excluded before scoring.
+PAYMENT_RE_PARTS = [
+    "autopay", "auto pay", "payment - thank", "payment thank",
+    "online payment", "mobile payment", "payment received",
+    "electronic payment", "pymt", "thank you",
+]
+
 AUTO_APPLY_THRESHOLD = 0.9
 REVIEW_THRESHOLD = 0.3
 
@@ -171,8 +182,18 @@ def match_transaction(txn_name: str, txn_amount: float, txn_date: date, benefits
     return MatchResult(candidates=candidates)
 
 
+def is_payment(txn_name: str) -> bool:
+    """A payment TO the card (autopay, online payment) — money-in like a
+    credit, but never a benefit redemption."""
+    n = (txn_name or "").lower()
+    return any(p in n for p in PAYMENT_RE_PARTS)
+
+
 def is_candidate_transaction(txn_name: str, txn_amount: float) -> bool:
     """First-pass filter before even trying to match: a credit shows as a
     negative Plaid amount, OR (belt-and-suspenders) the description itself
-    reads like an issuer-generated credit even if the sign looks off."""
+    reads like an issuer-generated credit even if the sign looks off.
+    Card payments are excluded outright — see PAYMENT_RE_PARTS."""
+    if is_payment(txn_name):
+        return False
     return txn_amount < 0 or _is_issuer_credit_shaped(txn_name)

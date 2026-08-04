@@ -319,22 +319,39 @@ class TestCadenceLabels:
 
 
 class TestPlaidVisibility:
-    """User-confirmed ground truth: Plaid cleanly sees only the named Amex
-    cash-back-style dining credits and Chase's $300 travel credit. Everything
-    else routes through a mechanism Plaid can't cleanly match, regardless of
-    how the issuer markets it."""
+    """Ground truth for which benefits the matcher may consider.
 
-    PLAID_VISIBLE = {
+    REVISED 2026-08-03 against real production Plaid data from the two Amex
+    cards. The original list was a pre-Plaid assumption, and three of its
+    "Plaid can't see this" calls turned out to be wrong — Saks, lululemon and
+    the FHR hotel credit all post as ordinary statement lines under Amex's own
+    descriptors ("PLATINUM SAKS CREDIT", "Platinum Lululemon Credit",
+    "Platinum Hotel Credit"). The hotel credit keeps tracking_mode 'planned'
+    (it still needs advance booking, and the UI pill says so) and opts in via
+    detection_hint.plaid_detectable instead.
+    """
+
+    MATCHABLE = {
         "amex_plat_resy", "amex_plat_digital_entertainment",
         "amex_gold_dining", "amex_gold_resy", "amex_gold_dunkin",
         "csr_travel_credit",
+        # added on real-data evidence:
+        "amex_plat_saks", "amex_plat_lululemon", "amex_plat_hotel_credit",
     }
 
-    def test_exactly_the_confirmed_benefits_are_plaid_auto(self):
+    def test_exactly_the_confirmed_benefits_are_matchable(self):
+        from app.catalog import Catalog
+        from app.main import _is_matchable
+        c = Catalog()
+        actual = {bid for bid, b in c.benefits.items() if _is_matchable(b)}
+        assert actual == self.MATCHABLE
+
+    def test_hotel_credit_stays_planned_so_it_keeps_its_plan_ahead_pill(self):
         from app.catalog import Catalog
         c = Catalog()
-        actual = {bid for bid, b in c.benefits.items() if b.get("tracking_mode") == "plaid_auto"}
-        assert actual == self.PLAID_VISIBLE
+        b = c.benefits["amex_plat_hotel_credit"]
+        assert b["tracking_mode"] == "planned"
+        assert b["detection_hint"]["plaid_detectable"] is True
 
 
 class TestBiltHotelCreditResolved:

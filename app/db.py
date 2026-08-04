@@ -573,6 +573,17 @@ def set_transaction_match(txn_id: str, match_status: str, matched_benefit_id: st
         )
 
 
+def delete_plaid_item(card_id: str) -> None:
+    """Disconnect a card — removes the Item and its cached transactions so a
+    reconnect (e.g. switching sandbox -> production) starts clean rather than
+    re-matching stale rows against a now-invalid access token. Redemptions
+    already logged from those transactions are left alone — they're real
+    entries in the ledger regardless of which bank connection produced them."""
+    with connect() as conn:
+        conn.execute("DELETE FROM plaid_items WHERE card_id=?", (card_id,))
+        conn.execute("DELETE FROM plaid_transactions WHERE card_id=?", (card_id,))
+
+
 def review_queue() -> list[dict]:
     with connect() as conn:
         return [dict(r) for r in conn.execute(

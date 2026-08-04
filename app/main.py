@@ -17,6 +17,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -27,6 +28,17 @@ load_dotenv()
 
 ROOT = Path(__file__).resolve().parent.parent
 app = FastAPI(title="CC Benefits Tracker")
+# Plaid Link's hosted iframe (cdn.plaid.com) may probe our redirect_uri
+# cross-origin before completing an OAuth handoff (Amex, Chase, etc.) — with
+# no CORS handling at all, that preflight fails and Link can abort silently,
+# with nothing visible in our own server logs or Plaid's own Link analytics.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https://([a-zA-Z0-9-]+\.)*plaid\.com",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.mount("/static", StaticFiles(directory=str(ROOT / "app" / "static")), name="static")
 templates = Jinja2Templates(directory=str(ROOT / "app" / "templates"))
 
@@ -255,7 +267,7 @@ def plaid_link_token(card_id: str = Form(...)):
     if card_id not in CATALOG.cards:
         raise HTTPException(404, f"unknown card {card_id}")
     try:
-        token = plaid_client.create_link_token(card_id)
+        token = plaid_client.create_link_token(card_id, redirect_uri=os.getenv("PLAID_REDIRECT_URI") or None)
     except plaid_client.PlaidNotConfigured as e:
         raise HTTPException(400, str(e))
     return {"link_token": token}
@@ -284,6 +296,15 @@ def plaid_sync(card_id: str):
     return _state()
 
 
+@app.post("/api/plaid/disconnect/{card_id}")
+def plaid_disconnect(card_id: str):
+    """Remove a card's Plaid connection so it can be relinked — e.g. after
+    switching PLAID_ENV from sandbox to production, the old sandbox Item's
+    access token is worthless in production and would only error on sync."""
+    db.delete_plaid_item(card_id)
+    return _state()
+
+
 def _sync_card(card_id: str) -> None:
     item = db.plaid_item_for_card(card_id)
     if not item:
@@ -292,11 +313,25 @@ def _sync_card(card_id: str) -> None:
     result = plaid_client.sync_transactions(access_token, item["cursor"])
     db.set_plaid_cursor(card_id, result["next_cursor"])
 
-    benefits = [b for b in CATALOG.benefits_for(card_id) if b.get("tracking_mode") == "plaid_auto"]
+    benefits = [b for b in CATALOG.benefits_for(card_id) if _is_matchable(b)]
     for txn in result["added"] + result["modified"]:
         _process_transaction(card_id, item["item_id"], txn, benefits)
     for txn in result["removed"]:
         db.delete_plaid_transaction(_txn_field(txn, "transaction_id"))
+
+
+def _is_matchable(benefit: dict) -> bool:
+    """Which benefits the matcher is allowed to consider.
+
+    `tracking_mode: plaid_auto` is the normal signal. `detection_hint.
+    plaid_detectable` is the escape hatch for credits that DO post as a
+    statement line (so Plaid can see them) but whose tracking_mode carries
+    other meaning we don't want to lose — the FHR hotel credit stays
+    `planned` so it keeps its PLAN AHEAD pill, while still being matchable.
+    """
+    if benefit.get("tracking_mode") == "plaid_auto":
+        return True
+    return bool((benefit.get("detection_hint") or {}).get("plaid_detectable"))
 
 
 def _txn_field(txn, key, default=None):

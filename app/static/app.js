@@ -72,14 +72,57 @@ async function plaidConnect(cardId) {
     alert('Could not start Plaid Link: ' + e.message);
     return;
   }
-  const handler = Plaid.create({
+  // OAuth institutions (Amex, Chase, most major banks) fully navigate the
+  // browser away to the bank's own login page and back — in-memory JS state
+  // doesn't survive that round trip, so the token and card have to live in
+  // sessionStorage for resumePlaidOAuthIfNeeded() to pick back up on reload.
+  sessionStorage.setItem('plaid_link_token', link_token);
+  sessionStorage.setItem('plaid_link_card', cardId);
+  openPlaidLink(link_token, cardId);
+}
+
+function openPlaidLink(link_token, cardId, receivedRedirectUri) {
+  const config = {
     token: link_token,
     onSuccess: (public_token, metadata) => {
+      sessionStorage.removeItem('plaid_link_token');
+      sessionStorage.removeItem('plaid_link_card');
       const institution_name = (metadata && metadata.institution && metadata.institution.name) || '';
       post('/api/plaid/exchange', { card_id: cardId, public_token, institution_name });
     },
-  });
-  handler.open();
+    // `err` is populated whenever Link closes because it hit a Plaid API
+    // error, not just a plain user-initiated exit — surfacing it is the
+    // only way a silent-looking close (institution selected, modal just
+    // disappears) turns into an actual diagnosable error.
+    onExit: (err, metadata) => {
+      sessionStorage.removeItem('plaid_link_token');
+      sessionStorage.removeItem('plaid_link_card');
+      if (err) {
+        console.error('Plaid Link exited with error:', err, metadata);
+        alert('Plaid Link error: ' + (err.error_message || err.error_code || JSON.stringify(err)));
+      } else {
+        console.log('Plaid Link exited (no error). Metadata:', metadata);
+      }
+    },
+    onEvent: (eventName, metadata) => {
+      console.log('Plaid Link event:', eventName, metadata);
+    },
+  };
+  if (receivedRedirectUri) config.receivedRedirectUri = receivedRedirectUri;
+  Plaid.create(config).open();
+}
+
+// After an OAuth institution's login redirects back to us, the URL carries
+// ?oauth_state_id=... — resume the SAME Link session (not a fresh one) using
+// the token stashed before the redirect, then scrub the param so a page
+// refresh doesn't try to resume a session that's already finished.
+function resumePlaidOAuthIfNeeded() {
+  if (!window.location.search.includes('oauth_state_id')) return;
+  const link_token = sessionStorage.getItem('plaid_link_token');
+  const cardId = sessionStorage.getItem('plaid_link_card');
+  if (!link_token || !cardId) return;
+  openPlaidLink(link_token, cardId, window.location.href);
+  window.history.replaceState({}, '', window.location.pathname);
 }
 
 function plaidSync(cardId) { post(`/api/plaid/sync/${cardId}`, {}); }
@@ -637,7 +680,8 @@ function plaidSection(c) {
   }
   return `<div class="group-lbl">Bank sync <span class="ct">connected</span></div>
     <div class="sub">${esc(item.institution_name || 'Linked bank')}${item.last_synced_at ? ' · last synced ' + fmtDay(item.last_synced_at) : ' · not yet synced'}</div>
-    <button class="mini ghost" data-act="plaidsync" data-b="${c.id}">Sync now</button>`;
+    <button class="mini ghost" data-act="plaidsync" data-b="${c.id}">Sync now</button>
+    <button class="mini ghost" data-act="plaiddisconnect" data-b="${c.id}">Disconnect</button>`;
 }
 
 // Rent points earned (Bilt, Option A) — the card's actual job: points that
@@ -812,6 +856,7 @@ document.addEventListener('click', e => {
   if (act === 'selectrentpoints') return selectCell('rentpoints', b, i, cap, cur, lbl);
   if (act === 'plaidconnect') return plaidConnect(b);
   if (act === 'plaidsync') return plaidSync(b);
+  if (act === 'plaiddisconnect') return post('/api/plaid/disconnect/' + b, {});
   if (act === 'reviewconfirm') return post(`/api/review/${t.dataset.txn}/confirm`, { benefit_id: t.dataset.benefit });
   if (act === 'reviewreject') return post(`/api/review/${t.dataset.txn}/reject`, {});
 });
@@ -859,4 +904,5 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
+resumePlaidOAuthIfNeeded();
 load();
