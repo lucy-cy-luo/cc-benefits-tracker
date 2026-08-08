@@ -573,6 +573,17 @@ def set_transaction_match(txn_id: str, match_status: str, matched_benefit_id: st
         )
 
 
+def plaid_transactions_between(card_id: str, start: str, end: str) -> list[dict]:
+    """Raw synced transactions in a date window. Used by the Bilt statement
+    model, which needs the spend side (positive amounts) rather than the
+    credit side the matcher looks at."""
+    with connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM plaid_transactions WHERE card_id=? AND date>=? AND date<=? ORDER BY date",
+            (card_id, start, end),
+        )]
+
+
 def delete_plaid_item(card_id: str) -> None:
     """Disconnect a card — removes the Item and its cached transactions so a
     reconnect (e.g. switching sandbox -> production) starts clean rather than

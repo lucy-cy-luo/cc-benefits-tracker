@@ -12,16 +12,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import crypto, db, matching, periods, plaid_client, roi
+from . import calendar_feed, crypto, db, matching, periods, plaid_client, roi
 from .catalog import Catalog
 
 load_dotenv()
@@ -459,6 +460,28 @@ def _plaid_items_view() -> list[dict]:
          "last_synced_at": it["last_synced_at"]}
         for it in db.all_plaid_items()
     ]
+
+
+# --- calendar feed -----------------------------------------------------------
+
+@app.get("/calendar/{token}.ics")
+def calendar_ics(token: str):
+    """Read-only iCalendar feed for Google Calendar to subscribe to.
+
+    Guarded by an unguessable token in the path rather than a login, because
+    Google's feed fetcher can't complete an interactive auth challenge — the
+    same pattern Google itself uses for a calendar's "secret address". The
+    token grants READ of benefit names, amounts and deadlines only; it can't
+    write anything, and it deliberately exposes no transactions or balances.
+    """
+    expected = os.getenv("CALENDAR_FEED_TOKEN")
+    if not expected:
+        raise HTTPException(404, "calendar feed is not enabled (set CALENDAR_FEED_TOKEN)")
+    if not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+    ics = calendar_feed.build_ics(_state(), _today())
+    return Response(content=ics, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
 
 
 # --- digest (Phase 5 seam) ---------------------------------------------------

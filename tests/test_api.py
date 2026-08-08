@@ -335,8 +335,10 @@ class TestPlaidVisibility:
         "amex_plat_resy", "amex_plat_digital_entertainment",
         "amex_gold_dining", "amex_gold_resy", "amex_gold_dunkin",
         "csr_travel_credit",
-        # added on real-data evidence:
+        # added on real-data evidence (Amex, 2026-08-03):
         "amex_plat_saks", "amex_plat_lululemon", "amex_plat_hotel_credit",
+        # added on real-data evidence (CSR, 2026-08-04):
+        "csr_dining", "csr_stubhub",
     }
 
     def test_exactly_the_confirmed_benefits_are_matchable(self):

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import db, periods
+from . import db, matching, periods
 
 
 # --- verdict -----------------------------------------------------------------
@@ -117,6 +117,129 @@ def _avg_cpp_all_time(card_id: str) -> float | None:
     realized = sum(points_math(r)["realized"] for r in rows)
     total_pts = sum(float(r["card_points"] or 0) for r in rows)
     return (realized / total_pts * 100) if total_pts else None
+
+
+def _statement_window(year: int, month: int, close_day: int) -> tuple[date, date]:
+    """The qualifying window for `month`'s rent points: the statement period
+    ending on close_day OF that month, i.e. [prev month close_day+1 .. month
+    close_day]. Confirmed against real data — the two competing readings
+    (calendar month, and the window STARTING in that month) both contradict
+    the user's logged points."""
+    end = date(year, month, close_day)
+    if month == 1:
+        start = date(year - 1, 12, close_day + 1)
+    else:
+        start = date(year, month - 1, close_day + 1)
+    return start, end
+
+
+def _tier_for(tiers: list[dict], pct: float) -> dict:
+    """Tiers are a step function — take the highest one whose threshold is met."""
+    hit = tiers[0]
+    for t in tiers:
+        if pct >= t["spend_pct_of_rent"]:
+            hit = t
+    return hit
+
+
+def _bilt_statement_months(catalog, card_id, year, today, logged_by_month):
+    """Per-month statement view driving the rent-points suggestions.
+
+    Deliberately produces SUGGESTIONS, never writes. A month the user has
+    already filled in is left alone; if the model disagrees with their figure
+    that surfaces as a flag, because a disagreement means the model is wrong
+    and that's worth seeing rather than hiding.
+    """
+    spec = catalog.raw.get("bilt_points_model") or {}
+    if spec.get("card") != card_id:
+        return None
+    tiers = sorted(spec.get("tiers") or [], key=lambda t: t["spend_pct_of_rent"])
+    if not tiers:
+        return None
+
+    close_day = int(spec.get("statement_close_day", 9))
+    charge_pat = (spec.get("housing_charge_pattern") or "").upper()
+    net_refunds = bool(spec.get("refunds_reduce_spend"))
+
+    out = []
+    for month in range(1, 13):
+        start, end = _statement_window(year, month, close_day)
+        rows = db.plaid_transactions_between(card_id, start.isoformat(), end.isoformat())
+
+        # Rent for THIS month comes from the housing charge Plaid actually saw
+        # (rent moves), falling back to the catalog figure only if absent.
+        m_start, m_end = periods.month_bounds(year, month)
+        rent = 0.0
+        for r in db.plaid_transactions_between(card_id, m_start.isoformat(), m_end.isoformat()):
+            if charge_pat and charge_pat in (r["name"] or "").upper() and r["amount"] > 0:
+                rent = float(r["amount"])
+                break
+
+        spend = 0.0
+        for r in rows:
+            name, amt = r["name"] or "", float(r["amount"])
+            if charge_pat and charge_pat in name.upper():
+                continue                      # the rent charge itself never qualifies
+            if matching.is_payment(name):
+                continue                      # paying the bill isn't spend
+            if amt > 0:
+                spend += amt
+            elif net_refunds:
+                spend += amt                  # amt is negative -> nets out
+
+        spend = max(0.0, spend)
+        closed = today > end
+        has_data = bool(rows) or rent > 0
+        pct = (100.0 * spend / rent) if rent else 0.0
+        tier = _tier_for(tiers, pct) if rent else None
+
+        projected = None
+        if tier is not None:
+            if tier.get("multiplier"):
+                projected = int(rent * tier["multiplier"])   # floor, per real data
+            else:
+                projected = int(tier.get("flat_points") or 0)
+
+        # A logged 0 on a month that DID pay rent is a placeholder, not a real
+        # figure: the model's floor is the flat tier (250 pts), so zero is
+        # unreachable whenever a housing charge exists. Treating it as unset
+        # lets the suggestion through instead of the cell silently blocking it.
+        logged = logged_by_month.get(month)
+        if logged == 0 and rent > 0:
+            logged = None
+        out.append({
+            "month": month,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "closed": closed,
+            "has_data": has_data,
+            "rent": round(rent, 2),
+            "spend": round(spend, 2),
+            "pct_of_rent": round(pct, 1),
+            "multiplier": (tier or {}).get("multiplier"),
+            "projected_points": projected,
+            "next_tier": _next_tier_gap(tiers, pct, rent, projected) if (not closed and rent) else None,
+            # Only suggest for a closed window we actually have data for, on a
+            # month the user hasn't filled in themselves.
+            "suggest": bool(closed and has_data and rent and logged is None and projected is not None),
+            # Model vs. the user's own figure — surfaced, never auto-corrected.
+            "disagrees": bool(logged is not None and projected is not None
+                              and closed and has_data and rent and abs(logged - projected) > 1),
+        })
+    return out
+
+
+def _next_tier_gap(tiers, pct, rent, projected):
+    """For an OPEN window: what more spend would buy. The multiplier is a step
+    function, so the marginal dollar near a boundary is worth far more than
+    its headline 2x — that's the whole point of surfacing this before close."""
+    nxt = next((t for t in tiers if t["spend_pct_of_rent"] > pct), None)
+    if not nxt or not rent:
+        return None
+    need = rent * nxt["spend_pct_of_rent"] / 100.0 - rent * pct / 100.0
+    gain = int(rent * nxt["multiplier"]) - (projected or 0)
+    return {"pct": nxt["spend_pct_of_rent"], "multiplier": nxt["multiplier"],
+            "spend_needed": round(max(0.0, need), 2), "points_gained": max(0, gain)}
 
 
 def _rent_points_view(catalog, card_id, year):
@@ -381,6 +504,11 @@ def build_state(catalog, today: date | None = None) -> dict:
         # A card never counts both; redemptions still get logged/shown for Bilt
         # (and refine the rent-points valuation rate) but flagged bonus-only.
         rent_points = _rent_points_view(catalog, cid, year)
+        statement_months = (
+            _bilt_statement_months(catalog, cid, year, today,
+                                   {m["month"]: m["points"] for m in rent_points["months"]})
+            if rent_points is not None else None
+        )
         counts_via_redemption = thesis == "hybrid"
         points = _points_view(card, year, counts_via_redemption)
 
@@ -425,6 +553,7 @@ def build_state(catalog, today: date | None = None) -> dict:
             "cash": cash,
             "points": points,
             "rent_points": rent_points,
+            "statement_months": statement_months,
             "entries": entries,
         })
 

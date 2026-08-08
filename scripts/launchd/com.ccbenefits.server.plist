@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ccbenefits.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/run/.venvs/cc-benefits-tracker/bin/uvicorn</string>
+    <string>app.main:app</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>8420</string>
+    <string>--log-level</string><string>warning</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/run/Projects/cc-benefits-tracker</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/run/Library/Logs/cc-benefits-server.log</string>
+  <key>StandardErrorPath</key><string>/Users/run/Library/Logs/cc-benefits-server.log</string>
+</dict>
+</plist>

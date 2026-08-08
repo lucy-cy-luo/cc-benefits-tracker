@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ccbenefits.sync</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/run/Projects/cc-benefits-tracker/scripts/daily_sync.sh</string></array>
+  <key>WorkingDirectory</key><string>/Users/run/Projects/cc-benefits-tracker</string>
+  <!-- Daily at 06:30. If the Mac was asleep, launchd runs it on wake. -->
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/run/Library/Logs/cc-benefits-sync.log</string>
+  <key>StandardErrorPath</key><string>/Users/run/Library/Logs/cc-benefits-sync.log</string>
+</dict>
+</plist>

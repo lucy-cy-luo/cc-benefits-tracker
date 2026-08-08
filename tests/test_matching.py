@@ -60,6 +60,18 @@ class TestCardPaymentsAreNeverCandidates:
         # $76.23 fits Resy's $100 quarterly cap — the old bug exactly.
         assert matching.is_candidate_transaction("AUTOPAY PAYMENT - THANK YOU", -76.23) is False
 
+    @pytest.mark.parametrize("name,amount", [
+        # Bilt pays rent as a same-day charge/payment pair that nets to zero.
+        ("Bilt Housing Payment", 2411.18),
+        ("Payment - Bilt Housing", -2411.18),
+        # Chase/Bilt payment descriptors seen in real data.
+        ("Payment Thank You - Web", -7000.00),
+        ("Payment Thank You-Mobile", -5500.00),
+        ("Autopay Payment", -4924.86),
+    ])
+    def test_real_payment_descriptors_from_all_four_cards(self, name, amount):
+        assert matching.is_candidate_transaction(name, amount) is False
+
 
 class TestIssuerDescriptorPatterns:
     """The credits post under Amex's own descriptor, not the merchant's —

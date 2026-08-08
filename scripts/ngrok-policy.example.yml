@@ -1,0 +1,23 @@
+# ngrok traffic policy — put a login in front of the app.
+#
+# Copy to scripts/ngrok-policy.yml (gitignored, since it holds a password)
+# and set your own credentials, then run the tunnel with:
+#
+#   ngrok http 8420 --traffic-policy-file scripts/ngrok-policy.yml
+#
+# WHY THE CALENDAR PATH IS EXEMPT
+# Google's calendar fetcher is a robot: it cannot complete an interactive
+# login, so a blanket auth rule would silently break the subscription. The
+# feed is instead protected by the unguessable token in its own URL — the
+# same "secret address" pattern Google Calendar itself uses. That token is
+# read-only and exposes benefit names, amounts and deadlines; it grants no
+# write access and no transaction data.
+on_http_request:
+  - expressions:
+      - "!req.url.path.startsWith('/calendar/')"
+    actions:
+      - type: basic-auth
+        config:
+          realm: CC Benefits Tracker
+          credentials:
+            - "CHANGE_ME_USER:CHANGE_ME_LONG_RANDOM_PASSWORD"

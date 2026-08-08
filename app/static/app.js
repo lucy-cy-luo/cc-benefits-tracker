@@ -701,31 +701,98 @@ function rentPointsSection(c) {
   const curMonth = STATE.today.slice(0, 4) === String(year) ? parseInt(STATE.today.slice(5, 7), 10) : 12;
   const byMonth = {};
   rp.months.forEach(m => { byMonth[m.month] = m.points; });
+  // Statement model (derived from Plaid spend) — suggestions only. A month
+  // you've filled in yourself is never overwritten or auto-corrected.
+  const stmt = {};
+  (c.statement_months || []).forEach(m => { stmt[m.month] = m; });
+
   const cells = MONTH_NAMES.map((name, i) => {
     const month = i + 1;
-    const has = Object.prototype.hasOwnProperty.call(byMonth, month);
+    const s = stmt[month];
+    const stored = Object.prototype.hasOwnProperty.call(byMonth, month);
+    // Same rule the statement model uses: a 0 on a month that DID pay rent
+    // can't be a real figure (the floor is the flat 250-pt tier), so it reads
+    // as an empty slot rather than a green "0 pts earned".
+    const placeholder = stored && byMonth[month] === 0 && s && s.rent > 0;
+    const has = stored && !placeholder;
     const pts = has ? byMonth[month] : 0;
     const future = month > curMonth;
-    const state = has ? 'done' : (future ? 'future' : 'open');
+    // Two flavours of derived number, both shown IN the cell so the figure is
+    // never hidden in prose: a firm suggestion once the statement has closed,
+    // and a provisional projection while it's still running.
+    const suggesting = !has && s && s.suggest;
+    const projecting = !has && !suggesting && s && !s.closed && s.rent > 0 && s.projected_points;
+    // Clicking pre-fills the edit strip with the derived figure, so accepting
+    // is one click + Enter — but it's still your save.
+    const prefill = (suggesting || projecting) ? s.projected_points : pts;
+    const state = has ? 'done'
+      : suggesting ? 'suggest'
+        : projecting ? 'projecting'
+          : (future ? 'future' : 'open');
     const sel = editing && editing.kind === 'rentpoints' && editing.id === c.id && editing.index === month;
-    const val = has ? fmtInt(pts) + ' pts' : (future ? '—' : 'add');
+    const val = has ? fmtInt(pts) + ' pts'
+      : (suggesting || projecting) ? fmtInt(s.projected_points)
+        : (future ? '—' : 'add');
+    const hint = has ? ''
+      : suggesting ? `<div class="mhint">${s.multiplier}x · tap to log</div>`
+        : projecting ? `<div class="mhint">${s.multiplier}x so far · open</div>`
+          : '';
+    const flag = (s && s.disagrees) ? '<span class="tick" style="color:var(--warn)">!</span>' : '';
+    const title = (suggesting || projecting)
+      ? `${money(s.spend)} non-rent spend = ${s.pct_of_rent}% of ${money(s.rent)} rent → ${s.multiplier}x`
+      : `${name} ${year} rent points`;
     return `<button class="mo ${state} ${sel ? 'editing' : ''}" ${future ? 'disabled' : ''}
         data-act="selectrentpoints" data-b="${c.id}" data-i="${month}"
-        data-cap="999999999" data-cur="${pts}" data-lbl="${esc(name)} ${year} rent points">
-        <span class="tick">${has ? '✓' : ''}</span>
-        <div class="mlab">${name}</div><div class="mval tnum">${val}</div></button>`;
+        data-cap="999999999" data-cur="${prefill}" data-lbl="${esc(name)} ${year} rent points"
+        title="${esc(title)}">
+        <span class="tick">${has ? '✓' : ''}</span>${flag}
+        <div class="mlab">${name}</div><div class="mval tnum">${val}</div>${hint}</button>`;
   }).join('');
   const strip = (editing && editing.kind === 'rentpoints' && editing.id === c.id) ? editStrip() : '';
+  // Placeholder zeros aren't logged months — don't inflate the count with them.
+  const loggedCount = rp.months.filter(m =>
+    !(m.points === 0 && stmt[m.month] && stmt[m.month].rent > 0)).length;
   return `<div class="group-lbl">Rent points earned <span class="ct">counts toward the verdict</span></div>
     <div class="barlab" style="margin:8px 0 4px">
       <span>Value this year <b>${money(rp.value)}</b></span>
       <span>Rate <b>${rp.rate_cpp.toFixed(2)}¢/pt${rp.rate_is_default ? ' (default)' : ''}</b></span>
-      <span>${fmtInt(rp.total_points)} pts <b>·</b> ${rp.months.length} of 12 months logged</span>
+      <span>${fmtInt(rp.total_points)} pts <b>·</b> ${loggedCount} of 12 months logged</span>
     </div>
     <div class="months">${cells}</div>
     ${strip}
-    <div class="mgrid-foot">Click a month to log rent points earned. Green = logged · outlined = this month, not yet logged · faint = upcoming.
+    ${statementNotes(c, stmt, curMonth, year)}
+    <div class="mgrid-foot">Click a month to log rent points earned. Green = logged by you · dashed blue = derived from your statement spend (solid = statement closed, ready to accept; faded = window still open, figure can still move) · faint = upcoming.
       ${rp.rate_is_default ? ' Valued at a conservative flat 1¢/pt until you log a real Bilt redemption below — Bilt points commonly transfer above 1¢, so this is a floor, not an optimistic guess.' : ''}</div>`;
+}
+
+// The evidence behind each suggestion, plus the tier-cliff nudge for the month
+// still in progress. Showing the spend and the percentage is the point — a
+// bare projected number would be a black box you'd have to trust blindly.
+function statementNotes(c, stmt, curMonth, year) {
+  const out = [];
+  const open = stmt[curMonth];
+  if (open && open.rent && !open.closed) {
+    const nt = open.next_tier;
+    const nudge = nt && nt.points_gained > 0
+      ? ` <b>${money(nt.spend_needed)} more</b> on Bilt before then reaches ${nt.pct}% → ${nt.multiplier}x, worth <b>${fmtInt(nt.points_gained)}</b> extra points.`
+      : ' Already at the top tier — further spend earns its plain rate, not more rent points.';
+    out.push(`<div class="noteblock"><b>${MONTH_NAMES[curMonth - 1]}</b> is still open (closes ${fmtDay(open.window_end)}):
+      ${money(open.spend)} non-rent spend = <b>${open.pct_of_rent}%</b> of ${money(open.rent)} rent.${nudge}</div>`);
+  }
+  const ready = Object.values(stmt).filter(m => m.suggest);
+  if (ready.length) {
+    out.push(`<div class="noteblock">${ready.length === 1 ? 'One month is' : ready.length + ' months are'} ready to log
+      from your statement spend — the dashed blue ${ready.length === 1 ? 'cell' : 'cells'} above
+      (${ready.map(m => `<b>${MONTH_NAMES[m.month - 1]} ${fmtInt(m.projected_points)}</b>`).join(', ')}).
+      Tap one to accept or edit it; nothing is saved until you do.</div>`);
+  }
+  Object.values(stmt).filter(m => m.disagrees).forEach(m => {
+    out.push(`<div class="noteblock warn">${MONTH_NAMES[m.month - 1]} ${year}: you logged
+      <b>${fmtInt((c.rent_points.months.find(x => x.month === m.month) || {}).points || 0)}</b> points, but your statement spend
+      (${money(m.spend)} = ${m.pct_of_rent}% of rent → ${m.multiplier}x) implies <b>${fmtInt(m.projected_points)}</b>.
+      Your figure is kept as-is — this is flagged because a mismatch means the model is wrong somewhere.</div>`);
+  });
+  return out.join('');
 }
 
 // Points value — logged per card, per the user's mapping (all Amex -> Plat,

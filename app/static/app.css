@@ -186,6 +186,16 @@ button{font-family:inherit;cursor:pointer}
 .mo.missed{background:var(--crit-bg);border-color:transparent}
 .mo.missed .mval{color:var(--crit)}
 .mo.open{border-color:var(--accent);border-width:1.5px}
+/* Derived from statement spend, not entered by you — reads as a proposal
+   (dashed, tinted) rather than a logged fact. `suggest` is a closed statement
+   (firm, ready to accept); `projecting` is a window still running, so it's
+   quieter — the number can still move. */
+.mo.suggest{background:var(--accent-tint);border-color:var(--accent);border-style:dashed}
+.mo.suggest .mval,.mo.suggest .mlab{color:var(--accent)}
+.mo.projecting{border-color:var(--accent);border-style:dashed;opacity:.85}
+.mo.projecting .mval,.mo.projecting .mlab{color:var(--accent)}
+.mhint{font-size:9px;letter-spacing:.02em;color:var(--accent);margin-top:2px;
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mo.open .mlab{color:var(--accent)}
 .mo.future{opacity:.45;cursor:default}
 .mo.dead{opacity:.3;cursor:default;border-style:dotted}

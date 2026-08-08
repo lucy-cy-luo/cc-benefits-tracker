@@ -41,3 +41,6 @@ venv/
 *.gsheet
 .tmp.drivedownload/
 .tmp.driveupload/
+
+# ngrok traffic policy — contains a password
+scripts/ngrok-policy.yml

@@ -45,6 +45,11 @@ PAYMENT_RE_PARTS = [
     "autopay", "auto pay", "payment - thank", "payment thank",
     "online payment", "mobile payment", "payment received",
     "electronic payment", "pymt", "thank you",
+    # Bilt pays rent by charging the card and posting an equal offsetting
+    # payment the same day ("Bilt Housing Payment" +$2,411.18 /
+    # "Payment - Bilt Housing" -$2,411.18). The money-in half is a payment,
+    # not a benefit — and neither half is a redemption of anything.
+    "payment - bilt", "bilt housing payment",
 ]
 
 AUTO_APPLY_THRESHOLD = 0.9
