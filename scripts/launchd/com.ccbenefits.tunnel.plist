@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ccbenefits.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/run/.local/bin/ngrok</string>
+    <string>http</string><string>8420</string>
+    <string>--traffic-policy-file</string>
+    <string>/Users/run/Projects/cc-benefits-tracker/scripts/ngrok-policy.yml</string>
+    <string>--log=stdout</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/run/Projects/cc-benefits-tracker</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/run/Library/Logs/cc-benefits-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/Users/run/Library/Logs/cc-benefits-tunnel.log</string>
+</dict>
+</plist>
