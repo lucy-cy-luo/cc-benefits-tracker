@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Benefits Tracker</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ v }}">
 </head>
 <body>
   <div class="nav">
@@ -32,6 +32,6 @@
      hosted JS served from Plaid's own CDN — there's no self-contained way to
      run their bank-auth flow. Everything else about this app stays local. -->
 <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ v }}"></script>
 </body>
 </html>

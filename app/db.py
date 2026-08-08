@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 
@@ -183,12 +184,55 @@ _MIGRATIONS = [
 ]
 
 
-@contextmanager
-def connect():
+def _new_conn():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    # check_same_thread=False because a request-scoped connection legitimately
+    # crosses threads: the middleware opens it on the event loop, then FastAPI
+    # runs the sync endpoint in a threadpool worker. The two never touch it at
+    # the same time — the middleware is awaiting while the endpoint runs — and
+    # each request gets its own connection via the ContextVar, so there is no
+    # sharing between requests either.
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+# One connection per request instead of one per query.
+#
+# Building the dashboard touches the DB ~300 times (every period-grid cell and
+# every Bilt statement month is its own lookup), and each of those was opening
+# and closing a separate SQLite connection — ~200ms of pure connection churn
+# for a page that reads a few hundred rows. `session()` binds a single
+# connection for the duration of a request; `connect()` transparently reuses
+# it. Call sites are unchanged, so this stays a plumbing change rather than a
+# rewrite of the query layer.
+_session: ContextVar = ContextVar("db_session", default=None)
+
+
+@contextmanager
+def session():
+    """Bind one connection for a whole request. Commits once at the end, so a
+    request that raises part-way leaves nothing half-written."""
+    conn = _new_conn()
+    token = _session.set(conn)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        _session.reset(token)
+        conn.close()
+
+
+@contextmanager
+def connect():
+    existing = _session.get()
+    if existing is not None:
+        # Inside a session: borrow it. Deliberately no commit/close here —
+        # the session owns this connection's lifecycle.
+        yield existing
+        return
+    conn = _new_conn()
     try:
         yield conn
         conn.commit()

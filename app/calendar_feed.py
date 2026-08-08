@@ -118,6 +118,33 @@ def build_ics(state, today: date | None = None, name: str = "Card Benefits") -> 
              "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
              "X-PUBLISHED-TTL:PT6H"]
 
+    # The renewal decision. This is the only deadline here that costs real
+    # money to miss: unused credits are upside forgone, but the fee is cash
+    # charged. Fires early — cancelling or asking for a retention offer is a
+    # phone call, not a same-day errand.
+    for card in state["cards"]:
+        f = card.get("fee_schedule") or {}
+        if not f.get("next_due"):
+            continue
+        due = date.fromisoformat(f["next_due"])
+        decide = date.fromisoformat(f["decide_by"]) if f.get("decide_by") else due
+        provenance = ("confirmed from your last fee charge" if f.get("verified")
+                      else "ESTIMATED date — not yet seen in your transactions")
+        for lead, tag in ((45, "Review"), (14, "Decide on")):
+            start = due - timedelta(days=lead)
+            if start < today:
+                continue
+            lines += _event(
+                f"fee-{card['id']}-{_d(due)}-{lead}@ccbt", start,
+                f"{tag} {card['label']} — ${card['cost']:,.0f} fee posts {due:%b %d}",
+                (f"Current verdict: {card['verdict'][1]}.\n"
+                 f"${card['cost']:,.0f} annual fee posts {due:%b %d, %Y} ({provenance}).\n"
+                 f"Cancel or ask for a retention offer before {decide:%b %d} — issuers "
+                 f"refund the fee only briefly after it posts."
+                 + ("\nThis card is currently NOT covering its fee."
+                    if card["verdict"][0] == "cancel" else "")),
+                alarm_days=0)
+
     swept = []
     for card, m in _open_entries(state):
         end = date.fromisoformat(m["window_end"])

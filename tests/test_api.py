@@ -690,3 +690,52 @@ class TestRentPoints:
 
     def test_no_rent_points_section_for_other_cards(self, client):
         assert cards(client.get("/api/state").json())["chase_sapphire_reserve"]["rent_points"] is None
+
+
+class TestFeeSchedule:
+    """The keep/cancel verdict is meaningless without a deadline attached."""
+
+    def test_every_card_reports_when_its_fee_posts(self, client):
+        for c in client.get("/api/state").json()["cards"]:
+            f = c["fee_schedule"]
+            assert f["next_due"] and f["days_until"] >= 0
+
+    def test_next_due_is_always_in_the_future(self, client):
+        s = client.get("/api/state").json()
+        for c in s["cards"]:
+            assert c["fee_schedule"]["next_due"] >= s["today"]
+
+    def test_catalog_dates_are_flagged_unverified(self, client):
+        # Nothing is confirmed until a real fee charge shows up in Plaid data.
+        for c in client.get("/api/state").json()["cards"]:
+            assert c["fee_schedule"]["verified"] is False
+            assert c["fee_schedule"]["source"] == "catalog"
+
+    def test_decide_by_precedes_the_charge(self, client):
+        for c in client.get("/api/state").json()["cards"]:
+            f = c["fee_schedule"]
+            assert f["decide_by"] < f["next_due"]
+
+
+class TestSyncStatus:
+    def test_reports_no_cards_when_nothing_is_linked(self, client):
+        assert client.get("/api/state").json()["sync_status"]["state"] == "none"
+
+    def test_flags_staleness_by_age(self):
+        from app.main import _sync_status
+        from datetime import date as d
+        today = d(2026, 8, 8)
+        fresh = [{"card_id": "a", "last_synced_at": "2026-08-08"}]
+        stale = [{"card_id": "a", "last_synced_at": "2026-08-05"}]
+        very = [{"card_id": "a", "last_synced_at": "2026-07-01"}]
+        assert _sync_status(fresh, today)["state"] == "fresh"
+        assert _sync_status(stale, today)["state"] == "stale"
+        assert _sync_status(very, today)["state"] == "very_stale"
+
+    def test_uses_the_oldest_card_not_the_newest(self):
+        # One card silently failing to sync must not be masked by the others.
+        from app.main import _sync_status
+        from datetime import date as d
+        items = [{"card_id": "a", "last_synced_at": "2026-08-08"},
+                 {"card_id": "b", "last_synced_at": "2026-06-01"}]
+        assert _sync_status(items, d(2026, 8, 8))["state"] == "very_stale"

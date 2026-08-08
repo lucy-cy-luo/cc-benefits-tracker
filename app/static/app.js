@@ -623,6 +623,24 @@ function sectionStripe(section, applicable, urgency) {
 // other exactly like the stripe and the pill just did.
 function pillClass(stripe) { return stripe === 'flat' ? 'neutral' : stripe; }
 
+// The keep/cancel verdict only means something against a deadline: you have
+// to decide BEFORE the fee posts. Unverified dates say so rather than implying
+// a precision the data doesn't have.
+function feeLine(c) {
+  const f = c.fee_schedule;
+  if (!f || !f.next_due) return '';
+  const d = f.days_until;
+  const cls = d <= 21 ? 'crit' : d <= 45 ? 'warn' : '';
+  const when = new Date(f.next_due + 'T12:00:00')
+    .toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const src = f.verified
+    ? `from your last fee charge on ${fmtDay(f.last_charged)}`
+    : 'estimated \u2014 not yet seen in your transactions';
+  return `<div class="feeline ${cls}">${money(c.cost)} fee posts <b>${when}</b> \u00b7 ${d} days
+    ${d <= 45 ? `\u00b7 <b>decide by ${fmtDay(f.decide_by)}</b>` : ''}
+    <span class="ct" title="${esc(src)}">${f.verified ? 'confirmed' : 'estimated'}</span></div>`;
+}
+
 function renderCard(c) {
   const g = { attn: [], track: [], rest: [] };
   for (const e of c.entries) {
@@ -653,7 +671,7 @@ function renderCard(c) {
     ? ` · getting ${money(c.verdict_value)} of realistic value for the ${money(c.cost)} fee`
     : pending ? (earnBased ? ' · log rent points earned to unlock the verdict' : ' · log a points redemption to unlock the verdict') : '';
   $('view').innerHTML = `
-    <div class="focus-hd"><div><h2>${c.name}</h2>
+    <div class="focus-hd"><div><h2>${c.name}</h2>${feeLine(c)}
       <div class="sub" style="margin:4px 0 0">${money(c.cost)}/yr${c.au_fee ? ` (${money(c.fee)} + ${money(c.au_fee)} AU)` : ''}${mathLine}</div></div>
       <span class="chip ${c.verdict[0]}">${c.verdict[1]}</span></div>
     <div style="padding:16px 0 4px">${c.cash ? biltCompositeBar(c) : tierBar(c.available, c.realistic, c.actual, c.cost, countedPointsValue(c))}</div>
@@ -879,8 +897,12 @@ function renderRefs() {
 
 function render() {
   if (!STATE) return;
-  $('today').textContent = new Date(STATE.today + 'T12:00:00')
+  const d = new Date(STATE.today + 'T12:00:00')
     .toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  const ss = STATE.sync_status || {};
+  // Sync runs unattended, so its failure mode is silence — surface the age.
+  $('today').innerHTML = `${d}` + (ss.label
+    ? ` <span class="syncpill ${ss.state}" title="Oldest card last synced: ${ss.oldest || 'never'}">${esc(ss.label)}</span>` : '');
   renderTabs();
   if (active === 'overview') renderOverview(); else renderCard(card(active));
   $('view').insertAdjacentHTML('beforeend', renderRefs());

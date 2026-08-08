@@ -40,6 +40,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.middleware("http")
+async def one_db_connection_per_request(request: Request, call_next):
+    """See db.session(): collapses ~300 per-query connections into one."""
+    with db.session():
+        return await call_next(request)
+
+
 app.mount("/static", StaticFiles(directory=str(ROOT / "app" / "static")), name="static")
 templates = Jinja2Templates(directory=str(ROOT / "app" / "templates"))
 
@@ -56,7 +63,35 @@ def _state():
     s = roi.build_state(CATALOG, _today())
     s["plaid_items"] = _plaid_items_view()
     s["review_queue"] = _review_queue_view()
+    s["sync_status"] = _sync_status(s["plaid_items"], _today())
     return s
+
+
+# Staleness thresholds, in days since the OLDEST linked card last synced.
+# Sync runs unattended now, so its failure mode is silence: launchd stops, the
+# tunnel dies, or a Plaid token expires, and the app keeps serving month-old
+# numbers as though they were current. Showing the age is what turns a silent
+# failure into something noticeable.
+SYNC_STALE_DAYS = 2
+SYNC_VERY_STALE_DAYS = 7
+
+
+def _sync_status(items: list[dict], today: date) -> dict:
+    if not items:
+        return {"state": "none", "oldest": None, "days": None,
+                "label": "No cards connected"}
+    synced = [i["last_synced_at"] for i in items if i.get("last_synced_at")]
+    if len(synced) < len(items):
+        return {"state": "never", "oldest": None, "days": None,
+                "label": "Some cards have never synced"}
+    oldest = min(synced)
+    days = (today - date.fromisoformat(oldest)).days
+    state = ("fresh" if days < SYNC_STALE_DAYS
+             else "stale" if days < SYNC_VERY_STALE_DAYS else "very_stale")
+    label = ("Synced today" if days == 0
+             else "Synced yesterday" if days == 1
+             else f"Last synced {days} days ago")
+    return {"state": state, "oldest": oldest, "days": days, "label": label}
 
 
 def _benefit(benefit_id: str):
@@ -68,9 +103,21 @@ def _benefit(benefit_id: str):
 
 # --- page --------------------------------------------------------------------
 
+def _asset_version() -> str:
+    """Cache-buster derived from the static files' own mtimes.
+
+    Without it the browser holds onto app.js indefinitely and quietly runs
+    stale code against fresh data — which looks exactly like a bug in the app
+    and cost real debugging time more than once.
+    """
+    d = ROOT / "app" / "static"
+    return str(int(max(f.stat().st_mtime for f in d.glob("app.*"))))
+
+
 @app.get("/")
 def dashboard(request: Request):
-    return templates.TemplateResponse(request, "benefits_tracker.html")
+    return templates.TemplateResponse(request, "benefits_tracker.html",
+                                      {"v": _asset_version()})
 
 
 @app.get("/api/state")

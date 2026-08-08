@@ -17,6 +17,7 @@ from plaid.model.country_code import CountryCode
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
@@ -83,6 +84,12 @@ def create_link_token(card_id: str, redirect_uri: str | None = None) -> str:
         country_codes=[CountryCode("US")],
         user=LinkTokenCreateRequestUser(client_user_id=card_id),
         products=[Products("transactions")],
+        # Ask for the full two years Plaid allows. The default lookback is
+        # ~90 days, which is useless for anything annual: the first link of
+        # all four cards returned exactly 93 days each, so not one annual-fee
+        # charge landed in range. Fee dates drive the keep/cancel deadline,
+        # so the window has to span at least a full billing year.
+        transactions=LinkTokenTransactions(days_requested=730),
     )
     if redirect_uri:
         kwargs["redirect_uri"] = redirect_uri

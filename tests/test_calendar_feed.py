@@ -140,3 +140,51 @@ class TestEndpoint:
             os.environ.pop("DATABASE_PATH", None)
             os.environ.pop("CALENDAR_FEED_TOKEN", None)
             os.unlink(path)
+
+
+class TestRenewalDecisionEvents:
+    """The fee deadline is the only one here that costs cash to miss."""
+
+    def _state_with_fee(self, **over):
+        f = {"next_due": "2026-08-31", "decide_by": "2026-08-17",
+             "days_until": 27, "verified": False, "source": "catalog",
+             "last_charged": None}
+        f.update(over)
+        s = _state(remaining=0.0)          # no credit events, isolate fee ones
+        s["cards"][0].update({"cost": 795.0, "verdict": ["keep", "KEEP · $1,933 over fee"],
+                              "fee_schedule": f})
+        return s
+
+    def test_emits_review_and_decide_events(self):
+        ics = cf.build_ics(self._state_with_fee(), date(2026, 7, 1))
+        uids = _uids(ics)
+        assert any(u.endswith("-45@ccbt") for u in uids)
+        assert any(u.endswith("-14@ccbt") for u in uids)
+
+    def test_decide_event_lands_two_weeks_before_the_fee(self):
+        ics = cf.build_ics(self._state_with_fee(), date(2026, 7, 1))
+        assert "DTSTART;VALUE=DATE:20260817" in ics
+
+    def test_past_lead_times_are_skipped(self):
+        # 6 days out: the 45- and 14-day leads have both passed.
+        ics = cf.build_ics(self._state_with_fee(), date(2026, 8, 25))
+        assert not [u for u in _uids(ics) if u.startswith("fee-")]
+
+    def test_unverified_dates_are_labelled_as_estimates(self):
+        ics = cf.build_ics(self._state_with_fee(verified=False), date(2026, 7, 1))
+        assert "ESTIMATED" in ics
+
+    def test_verified_dates_cite_the_real_charge(self):
+        ics = cf.build_ics(self._state_with_fee(verified=True, last_charged="2025-08-31"),
+                           date(2026, 7, 1))
+        assert "confirmed from your last fee charge" in ics
+
+    def test_a_card_not_covering_its_fee_says_so(self):
+        s = self._state_with_fee()
+        s["cards"][0]["verdict"] = ["cancel", "DROP · $200 under fee"]
+        assert "NOT covering its fee" in cf.build_ics(s, date(2026, 7, 1))
+
+    def test_no_fee_schedule_produces_no_events(self):
+        s = self._state_with_fee()
+        s["cards"][0]["fee_schedule"] = {}
+        assert not [u for u in _uids(cf.build_ics(s, date(2026, 7, 1))) if u.startswith("fee-")]

@@ -20,7 +20,7 @@ source of truth, so a number can never disagree with itself between views.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from . import db, matching, periods
 
@@ -117,6 +117,80 @@ def _avg_cpp_all_time(card_id: str) -> float | None:
     realized = sum(points_math(r)["realized"] for r in rows)
     total_pts = sum(float(r["card_points"] or 0) for r in rows)
     return (realized / total_pts * 100) if total_pts else None
+
+
+# How issuers describe the annual fee on a statement line. Matching the charge
+# itself is the only way to know the true renewal date — a hand-entered date
+# goes stale silently the moment a product change or retention offer moves the
+# anniversary, and a cancel deadline you can't trust is worse than none.
+FEE_PATTERNS = ("annual membership fee", "annual fee", "membership fee",
+                "card member fee", "annual card fee")
+FEE_AMOUNT_TOLERANCE = 0.02      # fee amounts are exact; allow only rounding
+
+
+def _shift_year(d: date) -> date:
+    """Anniversary math that survives Feb 29."""
+    try:
+        return d.replace(year=d.year + 1)
+    except ValueError:
+        return d.replace(year=d.year + 1, day=28)
+
+
+def _find_last_fee_charge(card_id: str, fee_amounts: list[float]) -> dict | None:
+    """Most recent annual-fee charge Plaid can see for this card.
+
+    Requires BOTH description and amount to match. Description alone would
+    catch a 'membership fee' for a gym; amount alone would catch any
+    coincidental charge of the same size.
+    """
+    best = None
+    for r in db.plaid_transactions_between(card_id, "1900-01-01", "2999-12-31"):
+        name, amt = (r["name"] or "").lower(), float(r["amount"])
+        if amt <= 0 or not any(p in name for p in FEE_PATTERNS):
+            continue
+        if not any(abs(amt - f) <= FEE_AMOUNT_TOLERANCE for f in fee_amounts):
+            continue
+        if best is None or r["date"] > best["date"]:
+            best = {"date": r["date"], "amount": amt, "name": r["name"]}
+    return best
+
+
+def _fee_schedule(card: dict, card_id: str, cost: float, today: date) -> dict:
+    """When the next annual fee lands, and how much runway is left to decide.
+
+    Prefers the real charge Plaid observed; falls back to the catalog's
+    hand-entered renewal_date, flagged unverified so the UI can say so rather
+    than implying a precision it doesn't have.
+    """
+    amounts = [float(f) for f in (card.get("annual_fee"), cost,
+                                  card.get("authorized_user_fee")) if f]
+    observed = _find_last_fee_charge(card_id, amounts)
+
+    if observed:
+        last = date.fromisoformat(observed["date"])
+        nxt, source, verified = _shift_year(last), "plaid", True
+    else:
+        last, verified, source = None, False, "catalog"
+        nxt = card.get("renewal_date")
+        if not nxt:
+            return {"next_due": None, "days_until": None, "last_charged": None,
+                    "verified": False, "source": "unknown", "decide_by": None,
+                    "decision_due": False}
+    while nxt < today:                       # card held for several years
+        nxt = _shift_year(nxt)
+
+    days = (nxt - today).days
+    return {
+        "next_due": nxt.isoformat(),
+        "days_until": days,
+        "last_charged": last.isoformat() if last else None,
+        "verified": verified,
+        "source": source,
+        # Issuers refund a fee only for a short window after it posts, so the
+        # real deadline sits BEFORE the charge, not on it.
+        "decide_by": (nxt - timedelta(days=14)).isoformat(),
+        "decision_due": days <= 45,
+    }
 
 
 def _statement_window(year: int, month: int, close_day: int) -> tuple[date, date]:
@@ -548,6 +622,7 @@ def build_state(catalog, today: date | None = None) -> dict:
             "unresolved": unresolved,
             "unresolved_value": round(unresolved_value, 2),
             "verdict": verdict(verdict_value, cost, unresolved, thesis, has_points_data),
+            "fee_schedule": _fee_schedule(card, cid, cost, today),
             "verdict_value": round(verdict_value, 2),
             "attention": attention,
             "cash": cash,
