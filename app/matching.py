@@ -163,15 +163,21 @@ def score_benefit(txn_name: str, txn_amount: float, txn_date: date, benefit: dic
                          reason=f"merchant matched + ${amount:,.2f} fits {win.label}'s ${allowance:,.2f} cap",
                          **common)
 
-    # No merchant pattern to check — fall back to the issuer-credit-shape
-    # signal, which can only ever justify a review-queue entry, never auto-apply.
+    # No merchant pattern to check — the description has to carry it. Only a
+    # transaction that actually reads like an issuer credit qualifies, and even
+    # then only for the review queue, never an auto-apply.
+    #
+    # There used to be a further tier below this: "the amount happens to fit
+    # this window, no other signal", at 0.3. Real data retired it. Every
+    # no-pattern benefit is a magnet — Platinum's Resy credit alone accounted
+    # for 7 of 10 false positives the user rejected, hoovering up a United
+    # refund, a CLEAR refund and a Saks return purely because each was under
+    # its $100 quarterly cap. A bare amount coincidence is not evidence.
     if _is_issuer_credit_shaped(txn_name):
         return Candidate(confidence=0.5,
-                         reason=f"looks like an issuer credit, ${amount:,.2f} fits {win.label}'s ${allowance:,.2f} cap",
+                         reason=f"reads like an issuer credit, ${amount:,.2f} fits {win.label}'s ${allowance:,.2f} cap",
                          **common)
-    return Candidate(confidence=0.3,
-                     reason=f"${amount:,.2f} fits {win.label}'s ${allowance:,.2f} cap, no merchant/description signal",
-                     **common)
+    return None
 
 
 def match_transaction(txn_name: str, txn_amount: float, txn_date: date, benefits: list[dict]) -> MatchResult:
@@ -195,10 +201,14 @@ def is_payment(txn_name: str) -> bool:
 
 
 def is_candidate_transaction(txn_name: str, txn_amount: float) -> bool:
-    """First-pass filter before even trying to match: a credit shows as a
-    negative Plaid amount, OR (belt-and-suspenders) the description itself
-    reads like an issuer-generated credit even if the sign looks off.
-    Card payments are excluded outright — see PAYMENT_RE_PARTS."""
+    """First-pass filter: a statement credit is money IN, i.e. negative.
+
+    The sign test used to be paired with a belt-and-suspenders clause that also
+    admitted positive amounts whose wording looked credit-ish. Real data killed
+    it: "AMEX CLEAR PLUS CREDIT" +$40.00 is a charge (or a clawback), not a
+    credit, and it was the only false positive that survived every other
+    filter. A credit that posts as a positive amount is not a thing.
+    """
     if is_payment(txn_name):
         return False
-    return txn_amount < 0 or _is_issuer_credit_shaped(txn_name)
+    return txn_amount < 0

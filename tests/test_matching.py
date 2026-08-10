@@ -100,10 +100,12 @@ class TestIsCandidateTransaction:
     def test_positive_amount_normal_purchase_is_not(self):
         assert matching.is_candidate_transaction("WHOLE FOODS", 42.10) is False
 
-    def test_positive_amount_but_issuer_credit_wording_is_still_a_candidate(self):
-        # belt-and-suspenders: some feeds may not follow the negative-credit
-        # convention consistently, so wording alone can still flag it.
-        assert matching.is_candidate_transaction("STATEMENT CREDIT ADJUSTMENT", 19.99) is True
+    def test_positive_amount_is_never_a_candidate_even_if_worded_like_a_credit(self):
+        # This used to pass as belt-and-suspenders. Real data retired it:
+        # "AMEX CLEAR PLUS CREDIT" +$40.00 is a charge (or a clawback), and it
+        # was the only false positive to survive every other filter.
+        assert matching.is_candidate_transaction("STATEMENT CREDIT ADJUSTMENT", 19.99) is False
+        assert matching.is_candidate_transaction("AMEX CLEAR PLUS CREDIT", 40.00) is False
 
 
 class TestHighConfidenceAutoMatch:
@@ -150,10 +152,14 @@ class TestNoMerchantPatternBenefits:
         assert result.best.benefit_id == "amex_plat_resy"
         assert 0.3 < result.best.confidence < matching.AUTO_APPLY_THRESHOLD
 
-    def test_no_issuer_wording_still_surfaces_as_weak_review_candidate(self):
+    def test_a_bare_amount_coincidence_is_not_a_candidate(self):
+        # The old 0.3 tier ("the amount fits this window, no other signal") was
+        # the app's worst false-positive source: Platinum's Resy credit alone
+        # hoovered up a United refund, a CLEAR refund and a Saks return purely
+        # because each fell under its $100 quarterly cap.
         result = matching.match_transaction("RESY INC", -25.00, date(2026, 8, 1), [RESY])
-        assert result.status == "needs_review"
-        assert result.best.confidence == matching.REVIEW_THRESHOLD
+        assert result.status == "unmatched"
+        assert result.candidates == []
 
     def test_never_auto_applies_without_a_merchant_pattern(self):
         # Even a "perfect" amount+date fit for a no-pattern benefit must not
@@ -165,12 +171,13 @@ class TestNoMerchantPatternBenefits:
 
 class TestQuarterlyAndAnnualWindows:
     def test_quarterly_window_selects_the_right_quarter(self):
-        # Resy is $400/yr over 4 quarters = $100/quarter.
-        result = matching.match_transaction("RESY INC", -100.00, date(2026, 4, 2), [RESY])
+        # Resy is $400/yr over 4 quarters = $100/quarter. Needs credit wording
+        # now that a bare amount match no longer qualifies.
+        result = matching.match_transaction("AMEX RESY CREDIT", -100.00, date(2026, 4, 2), [RESY])
         assert result.best.window_label == "Q2 2026"
         assert result.best.allowance == 100.0
 
     def test_annual_window_covers_the_whole_year(self):
-        result = matching.match_transaction("DELTA AIR LINES", -300.00, date(2026, 11, 20), [CSR_TRAVEL])
+        result = matching.match_transaction("TRAVEL CREDIT $300/YEAR", -300.00, date(2026, 11, 20), [CSR_TRAVEL])
         assert result.best.window_label == "2026"
         assert result.best.allowance == 300.0

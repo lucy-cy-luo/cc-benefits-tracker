@@ -159,59 +159,60 @@ class TestManualOverrideAlwaysWins:
 
 
 class TestReviewQueue:
-    WEAK_TXN = {
-        "transaction_id": "txn_resy_1", "name": "RESY INC", "merchant_name": None,
-        "amount": -25.00, "date": "2026-08-01", "pending": False,  # Plaid: negative = credit
+    """How review items actually arise now that every matchable benefit has
+    merchant patterns: a confident match whose window you already logged by
+    hand. The engine recognises the credit but refuses to double-count it,
+    and hands the call to you."""
+
+    RESY_TXN = {
+        "transaction_id": "txn_resy_1", "name": "Platinum Resy Credit",
+        "merchant_name": None, "amount": -25.00, "date": "2026-08-01",
+        "pending": False,
     }
 
-    def test_ambiguous_transaction_lands_in_review_queue(self, client, monkeypatch):
-        c, main_mod = client
+    def _link_with(self, c, main_mod, monkeypatch, txn):
         monkeypatch.setattr(main_mod.plaid_client, "exchange_public_token",
                             lambda pub: ("access-token-1", "item-1"))
         monkeypatch.setattr(main_mod.plaid_client, "sync_transactions",
-                            lambda token, cursor: _sync_result(added=[dict(self.WEAK_TXN)]))
+                            lambda token, cursor: _sync_result(added=[dict(txn)]))
         c.post("/api/plaid/exchange", data={"card_id": "amex_platinum", "public_token": "pub-1"})
+
+    def test_a_confident_match_on_a_hand_logged_window_lands_in_review(self, client, monkeypatch):
+        c, main_mod = client
+        # Q3 already logged by hand -> the guard must defer rather than stack.
+        c.post("/api/period", data={"benefit_id": "amex_plat_resy", "index": 2, "amount": 40})
+        self._link_with(c, main_mod, monkeypatch, self.RESY_TXN)
 
         state = c.get("/api/state").json()
         assert len(state["review_queue"]) == 1
         entry = state["review_queue"][0]
-        assert entry["name"] == "RESY INC"
-        assert any(cand["benefit_id"] == "amex_plat_resy" for cand in entry["candidates"])
+        assert entry["name"] == "Platinum Resy Credit"
+        assert any(cd["benefit_id"] == "amex_plat_resy" for cd in entry["candidates"])
 
-    def test_confirming_creates_the_redemption(self, client, monkeypatch):
+    def test_confirming_adds_the_credit_on_top(self, client, monkeypatch):
         c, main_mod = client
-        monkeypatch.setattr(main_mod.plaid_client, "exchange_public_token",
-                            lambda pub: ("access-token-1", "item-1"))
-        monkeypatch.setattr(main_mod.plaid_client, "sync_transactions",
-                            lambda token, cursor: _sync_result(added=[dict(self.WEAK_TXN)]))
-        c.post("/api/plaid/exchange", data={"card_id": "amex_platinum", "public_token": "pub-1"})
+        c.post("/api/period", data={"benefit_id": "amex_plat_resy", "index": 2, "amount": 40})
+        self._link_with(c, main_mod, monkeypatch, self.RESY_TXN)
         txn_id = c.get("/api/state").json()["review_queue"][0]["id"]
 
         resp = c.post(f"/api/review/{txn_id}/confirm", data={"benefit_id": "amex_plat_resy"})
         assert resp.status_code == 200
         state = resp.json()
         assert state["review_queue"] == []
-        resy = next(
-            e for e in cards(state)["amex_platinum"]["entries"]
-            if e.get("id") == "amex_plat_resy"
-        )
-        assert resy["period_redeemed"] == pytest.approx(25.00)
+        resy = next(e for e in cards(state)["amex_platinum"]["entries"]
+                    if e.get("id") == "amex_plat_resy")
+        assert resy["period_redeemed"] == pytest.approx(65.00)   # 40 by hand + 25
 
-    def test_rejecting_creates_no_redemption_and_clears_the_queue(self, client, monkeypatch):
+    def test_rejecting_leaves_the_hand_logged_figure_alone(self, client, monkeypatch):
         c, main_mod = client
-        monkeypatch.setattr(main_mod.plaid_client, "exchange_public_token",
-                            lambda pub: ("access-token-1", "item-1"))
-        monkeypatch.setattr(main_mod.plaid_client, "sync_transactions",
-                            lambda token, cursor: _sync_result(added=[dict(self.WEAK_TXN)]))
-        c.post("/api/plaid/exchange", data={"card_id": "amex_platinum", "public_token": "pub-1"})
+        c.post("/api/period", data={"benefit_id": "amex_plat_resy", "index": 2, "amount": 40})
+        self._link_with(c, main_mod, monkeypatch, self.RESY_TXN)
         txn_id = c.get("/api/state").json()["review_queue"][0]["id"]
 
         resp = c.post(f"/api/review/{txn_id}/reject")
         assert resp.status_code == 200
         state = resp.json()
         assert state["review_queue"] == []
-        resy = next(
-            e for e in cards(state)["amex_platinum"]["entries"]
-            if e.get("id") == "amex_plat_resy"
-        )
-        assert resy["period_redeemed"] == 0
+        resy = next(e for e in cards(state)["amex_platinum"]["entries"]
+                    if e.get("id") == "amex_plat_resy")
+        assert resy["period_redeemed"] == pytest.approx(40.00)   # untouched
