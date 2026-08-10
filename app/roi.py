@@ -123,8 +123,16 @@ def _avg_cpp_all_time(card_id: str) -> float | None:
 # itself is the only way to know the true renewal date — a hand-entered date
 # goes stale silently the moment a product change or retention offer moves the
 # anniversary, and a cancel deadline you can't trust is worse than none.
-FEE_PATTERNS = ("annual membership fee", "annual fee", "membership fee",
-                "card member fee", "annual card fee")
+# Unambiguous on their own — no other charge is described this way, so the
+# amount is not required to corroborate them. That matters because fees CHANGE:
+# CSR's real charge was $550 + $75 under the old structure while the card now
+# costs $795, and Platinum went $695 -> $895. Insisting the historical charge
+# match today's price is exactly wrong at the moment a fee is repriced.
+FEE_PATTERNS_STRONG = ("annual membership fee", "renewal membership fee",
+                       "annual fee", "annual card fee")
+# Ambiguous — a gym or a club could post "membership fee" too, so these still
+# have to agree with a known fee amount before we believe them.
+FEE_PATTERNS_WEAK = ("membership fee", "card member fee", "member fee")
 FEE_AMOUNT_TOLERANCE = 0.02      # fee amounts are exact; allow only rounding
 
 
@@ -146,9 +154,14 @@ def _find_last_fee_charge(card_id: str, fee_amounts: list[float]) -> dict | None
     best = None
     for r in db.plaid_transactions_between(card_id, "1900-01-01", "2999-12-31"):
         name, amt = (r["name"] or "").lower(), float(r["amount"])
-        if amt <= 0 or not any(p in name for p in FEE_PATTERNS):
+        if amt <= 0:
             continue
-        if not any(abs(amt - f) <= FEE_AMOUNT_TOLERANCE for f in fee_amounts):
+        if any(p in name for p in FEE_PATTERNS_STRONG):
+            pass                                  # description alone is enough
+        elif any(p in name for p in FEE_PATTERNS_WEAK):
+            if not any(abs(amt - f) <= FEE_AMOUNT_TOLERANCE for f in fee_amounts):
+                continue                          # ambiguous wording, wrong amount
+        else:
             continue
         if best is None or r["date"] > best["date"]:
             best = {"date": r["date"], "amount": amt, "name": r["name"]}

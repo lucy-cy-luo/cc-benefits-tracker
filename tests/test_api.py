@@ -739,3 +739,46 @@ class TestSyncStatus:
         items = [{"card_id": "a", "last_synced_at": "2026-08-08"},
                  {"card_id": "b", "last_synced_at": "2026-06-01"}]
         assert _sync_status(items, d(2026, 8, 8))["state"] == "very_stale"
+
+
+class TestFeeChargeDetection:
+    """Fees get repriced, so the historical charge often disagrees with the
+    card's current price. Real data: CSR was billed $550 + $75 under the old
+    structure and now costs $795; Platinum went $695 -> $895."""
+
+    def _rows(self, monkeypatch, rows):
+        from app import roi
+        monkeypatch.setattr(roi.db, "plaid_transactions_between", lambda *a, **k: rows)
+
+    def test_repriced_fee_still_matches_on_description(self, monkeypatch):
+        from app import roi
+        self._rows(monkeypatch, [
+            {"date": "2025-09-01", "name": "ANNUAL MEMBERSHIP FEE", "amount": 550.0}])
+        # 550 is nowhere near today's 795 — the wording has to carry it.
+        hit = roi._find_last_fee_charge("csr", [795.0, 600.0])
+        assert hit and hit["date"] == "2025-09-01"
+
+    def test_ambiguous_wording_needs_the_amount_to_agree(self, monkeypatch):
+        from app import roi
+        self._rows(monkeypatch, [
+            {"date": "2026-03-01", "name": "GYM MEMBERSHIP FEE", "amount": 39.0}])
+        assert roi._find_last_fee_charge("x", [795.0]) is None
+
+    def test_ambiguous_wording_accepted_when_the_amount_matches(self, monkeypatch):
+        from app import roi
+        self._rows(monkeypatch, [
+            {"date": "2025-01-17", "name": "MEMBERSHIP FEE", "amount": 695.0}])
+        assert roi._find_last_fee_charge("plat", [695.0])["amount"] == 695.0
+
+    def test_takes_the_most_recent_charge(self, monkeypatch):
+        from app import roi
+        self._rows(monkeypatch, [
+            {"date": "2025-01-24", "name": "RENEWAL MEMBERSHIP FEE", "amount": 325.0},
+            {"date": "2026-01-25", "name": "RENEWAL MEMBERSHIP FEE", "amount": 325.0}])
+        assert roi._find_last_fee_charge("gold", [325.0])["date"] == "2026-01-25"
+
+    def test_credits_are_never_mistaken_for_a_fee(self, monkeypatch):
+        from app import roi
+        self._rows(monkeypatch, [
+            {"date": "2026-01-16", "name": "ANNUAL FEE REFUND", "amount": -895.0}])
+        assert roi._find_last_fee_charge("plat", [895.0]) is None
