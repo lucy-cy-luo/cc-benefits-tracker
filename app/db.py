@@ -598,8 +598,22 @@ def upsert_plaid_transaction(card_id: str, item_id: str, txn_id: str, when: str,
 
 
 def delete_plaid_transaction(txn_id: str) -> None:
-    """Cursor-sync 'removed' — Plaid pulled the transaction back (rare)."""
+    """Cursor-sync 'removed'. Most often this isn't Plaid pulling a
+    transaction back — it's the normal pending -> posted lifecycle: a pending
+    transaction gets its own transaction_id, gets auto-matched and produces a
+    redemption, and then Plaid removes that pending row and adds a new one
+    with a DIFFERENT transaction_id once it posts. The new one goes through
+    _process_transaction and matching fresh, so if the old row's redemption
+    is left behind, the same real-world credit ends up logged twice (real
+    case: Amex Gold's $10 dining credit showed twice in the same month, two
+    different transaction_ids, same $10 credit). So: if the transaction being
+    removed already produced a redemption, that redemption goes with it."""
     with connect() as conn:
+        row = conn.execute(
+            "SELECT redemption_id FROM plaid_transactions WHERE id=?", (txn_id,)
+        ).fetchone()
+        if row and row["redemption_id"] is not None:
+            conn.execute("DELETE FROM redemptions WHERE id=?", (row["redemption_id"],))
         conn.execute("DELETE FROM plaid_transactions WHERE id=?", (txn_id,))
 
 

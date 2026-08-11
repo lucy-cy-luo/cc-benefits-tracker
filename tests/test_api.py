@@ -834,8 +834,9 @@ class TestBulkConfirm:
     def test_confirms_several_at_once(self, client, monkeypatch):
         from app import main as m
         c = client
-        # two synthetic review rows on the same benefit
-        for i, d in enumerate(("2026-07-05", "2026-07-06")):
+        # two synthetic review rows on the same benefit, different months —
+        # same-month duplicates are exactly what the cap guard should refuse.
+        for i, d in enumerate(("2026-06-05", "2026-07-06")):
             m.db.upsert_plaid_transaction("amex_gold", "item-1", f"bulk{i}", d,
                                           "Dunkin'", -7.0, False, "{}")
             m.db.set_transaction_match(f"bulk{i}", "needs_review")
@@ -871,6 +872,46 @@ class TestRejectReason:
         assert row["match_status"] == "rejected"
         # "not a credit" and "wrong benefit" are different facts, kept apart
         assert row["reject_reason"] == "not_a_credit"
+
+
+class TestCapGuard:
+    """Real bug: Amex Gold's $10/mo dining credit ended up logged twice most
+    months — once by hand, once confirmed from Plaid — because nothing
+    checked the running total against the benefit's period allowance before
+    inserting. `amex_gold_dining` is $120/yr = $10/mo (index 1 = February)."""
+
+    def test_confirming_over_the_cap_is_rejected(self, client):
+        from app import main as m
+        c = client
+        c.post("/api/period", data={"benefit_id": "amex_gold_dining", "index": 1, "amount": 10})
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "dine1", "2026-02-12",
+                                      "AMEX Dining Credit", -10.0, False, "{}")
+        m.db.set_transaction_match("dine1", "needs_review")
+
+        resp = c.post("/api/review/dine1/confirm", data={"benefit_id": "amex_gold_dining"})
+        assert resp.status_code == 400
+        assert m.db.plaid_transaction("dine1")["match_status"] == "needs_review"
+        # the hand-logged $10 is untouched, and nothing extra got added
+        assert m.db.redeemed_in_period("amex_gold_dining", "2026-02-01", "2026-02-28") == 10.0
+
+    def test_bulk_confirm_skips_the_item_that_would_exceed_the_cap(self, client):
+        from app import main as m
+        c = client
+        c.post("/api/period", data={"benefit_id": "amex_gold_dining", "index": 1, "amount": 10})
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "dine1", "2026-02-12",
+                                      "AMEX Dining Credit", -10.0, False, "{}")
+        m.db.set_transaction_match("dine1", "needs_review")
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "dine2", "2026-03-05",
+                                      "AMEX Dining Credit", -10.0, False, "{}")
+        m.db.set_transaction_match("dine2", "needs_review")
+
+        resp = c.post("/api/review/bulk-confirm",
+                      data={"txn_ids": "dine1,dine2", "benefit_id": "amex_gold_dining"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [s["id"] for s in body["bulk_confirm_skipped"]] == ["dine1"]
+        assert m.db.plaid_transaction("dine1")["match_status"] == "needs_review"
+        assert m.db.plaid_transaction("dine2")["match_status"] == "confirmed"
 
 
 class TestYearNavigation:

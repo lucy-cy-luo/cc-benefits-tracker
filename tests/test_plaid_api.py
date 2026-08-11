@@ -133,6 +133,40 @@ class TestHighConfidenceAutoMatch:
         )
         assert digital_ent["period_redeemed"] == pytest.approx(19.99)
 
+    def test_pending_transaction_replaced_by_a_new_id_does_not_duplicate(self, client, monkeypatch):
+        """Real bug: unlike a same-id 'modified' resend, Plaid's actual
+        pending -> posted lifecycle often REMOVES the pending transaction_id
+        and ADDS a brand new one for the posted version. The old id's
+        auto-applied redemption has to go with it, or the same real-world
+        credit is logged twice under two different transaction_ids (this is
+        what happened to Amex Gold's dining credit)."""
+        c, main_mod = client
+        pending_txn = dict(HULU_TXN)
+        posted_txn = dict(HULU_TXN, transaction_id="txn_hulu_posted", pending=False)
+
+        calls = {"n": 0}
+        def fake_sync(token, cursor):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _sync_result(added=[pending_txn])
+            return _sync_result(added=[posted_txn], removed=[{"transaction_id": pending_txn["transaction_id"]}])
+
+        monkeypatch.setattr(main_mod.plaid_client, "exchange_public_token",
+                            lambda pub: ("access-token-1", "item-1"))
+        monkeypatch.setattr(main_mod.plaid_client, "sync_transactions", fake_sync)
+
+        c.post("/api/plaid/exchange", data={"card_id": "amex_platinum", "public_token": "pub-1"})
+        c.post("/api/plaid/sync/amex_platinum")
+        state = c.get("/api/state").json()
+
+        digital_ent = next(
+            e for e in cards(state)["amex_platinum"]["entries"]
+            if e.get("id") == "amex_plat_digital_entertainment"
+        )
+        assert digital_ent["period_redeemed"] == pytest.approx(19.99)
+        assert main_mod.db.plaid_transaction(pending_txn["transaction_id"]) is None
+        assert main_mod.db.plaid_transaction("txn_hulu_posted")["match_status"] == "auto_matched"
+
 
 class TestManualOverrideAlwaysWins:
     def test_auto_match_defers_to_review_if_window_already_manually_logged(self, client, monkeypatch):

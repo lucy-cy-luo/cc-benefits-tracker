@@ -366,11 +366,16 @@ def _sync_card(card_id: str) -> None:
     result = plaid_client.sync_transactions(access_token, item["cursor"])
     db.set_plaid_cursor(card_id, result["next_cursor"])
 
+    # Removed first: a pending transaction that gets replaced by a new
+    # transaction_id on posting arrives as removed+added in the SAME sync
+    # batch, and matching the new one against a cap that still counts the
+    # about-to-be-deleted old one would wrongly bounce it to review.
+    for txn in result["removed"]:
+        db.delete_plaid_transaction(_txn_field(txn, "transaction_id"))
+
     benefits = [b for b in CATALOG.benefits_for(card_id) if _is_matchable(b)]
     for txn in result["added"] + result["modified"]:
         _process_transaction(card_id, item["item_id"], txn, benefits)
-    for txn in result["removed"]:
-        db.delete_plaid_transaction(_txn_field(txn, "transaction_id"))
 
 
 def _is_matchable(benefit: dict) -> bool:
@@ -431,10 +436,21 @@ def _process_transaction(card_id: str, item_id: str, txn, benefits: list[dict]) 
 
     if status == "auto_matched":
         best = result.best
-        # Manual overrides always win: if this window already has a
-        # non-Plaid redemption, a human already decided it — defer to
-        # review instead of silently stacking a second entry on top.
-        if db.has_non_plaid_redemption_in_window(best.benefit_id, best.window_start, best.window_end):
+        # Two independent guards, either one defers to review:
+        #  - Manual overrides always win: a hand-logged entry already in this
+        #    window means a human already made a call here, even if there's
+        #    technically still room under the cap for a second credit.
+        #  - Cap guard: whatever's already in the window (any source) plus
+        #    this transaction must not exceed the benefit's period allowance
+        #    — catches Plaid-vs-Plaid stacking too, e.g. a pending
+        #    transaction that gets auto-matched and then reappears under a
+        #    new transaction_id once it posts (see _sync_card's handling of
+        #    `removed`, the primary fix for that case; this is the backstop
+        #    for whatever still slips through).
+        already = db.redeemed_in_period(best.benefit_id, best.window_start, best.window_end)
+        hand_logged = db.has_non_plaid_redemption_in_window(best.benefit_id, best.window_start, best.window_end)
+        over_cap = already + abs(amount) > best.allowance * matching.AMOUNT_TOLERANCE
+        if hand_logged or over_cap:
             status = "needs_review"
         else:
             rid = db.add_plaid_redemption(
@@ -493,17 +509,27 @@ def reject_review(txn_id: str, reason: str = Form(None)):
 @app.post("/api/review/bulk-confirm")
 def bulk_confirm(txn_ids: str = Form(...), benefit_id: str = Form(...)):
     """Accept several near-identical suggestions at once. A queue of six
-    Dunkin' matches is one decision, not six."""
+    Dunkin' matches is one decision, not six.
+
+    Each item still runs the cap check individually — a batch that would
+    double-count one window (e.g. two Dunkin' hits in the same month against
+    a $10 cap) skips just that item rather than failing the whole batch or
+    silently stacking it."""
     if benefit_id not in CATALOG.benefits:
         raise HTTPException(404, f"unknown benefit {benefit_id}")
-    done = 0
+    done, skipped = 0, []
     for tid in [t for t in txn_ids.split(",") if t]:
         txn = db.plaid_transaction(tid)
         if not txn or txn["match_status"] != "needs_review":
             continue
-        _confirm_one(tid, txn, benefit_id)
-        done += 1
-    return _state()
+        try:
+            _confirm_one(tid, txn, benefit_id)
+            done += 1
+        except HTTPException as e:
+            skipped.append({"id": tid, "reason": e.detail})
+    state = _state()
+    state["bulk_confirm_skipped"] = skipped
+    return state
 
 
 def _window_already_hand_logged(benefit_id: str, benefit: dict, txn_date: date) -> float:
@@ -524,11 +550,38 @@ def _window_already_hand_logged(benefit_id: str, benefit: dict, txn_date: date) 
     return round(total - plaid, 2)
 
 
+def _cap_check(benefit_id: str, benefit: dict, txn_date: date, amount: float):
+    """Would adding `amount` to this window push it past the benefit's period
+    allowance? Real case: Amex Gold's $10/mo dining credit ended up logged
+    twice most months — once by hand, once confirmed from Plaid — because
+    nothing checked the running total before inserting. Returns
+    (window, allowance, already_redeemed) so callers can both decide and
+    explain; `already_redeemed` includes every source, not just Plaid, so a
+    manual entry blocks a Plaid one and vice versa.
+    """
+    windows = periods.periods_in_year(benefit.get("cadence", "annual"), txn_date.year)
+    win = next((w for w in windows if w.contains(txn_date)), None)
+    if not win:
+        return None, None, 0.0
+    idx = next((i for i, w in enumerate(windows) if w is win), None)
+    allowance = periods.period_allowance(benefit, txn_date.year, idx)
+    already = db.redeemed_in_period(benefit_id, win.start.isoformat(), win.end.isoformat())
+    return win, allowance, already
+
+
 def _confirm_one(txn_id: str, txn: dict, benefit_id: str) -> None:
     benefit = CATALOG.benefits[benefit_id]
     txn_date = date.fromisoformat(txn["date"])
-    windows = periods.periods_in_year(benefit.get("cadence", "annual"), txn_date.year)
-    win = next((w for w in windows if w.contains(txn_date)), None)
+    win, allowance, already = _cap_check(benefit_id, benefit, txn_date, abs(txn["amount"]))
+    if allowance is not None and already + abs(txn["amount"]) > allowance * matching.AMOUNT_TOLERANCE:
+        raise HTTPException(
+            400,
+            f"{benefit['name']} already has ${already:,.2f} logged for "
+            f"{win.label if win else 'this window'} — confirming this $"
+            f"{abs(txn['amount']):,.2f} transaction would exceed the "
+            f"${allowance:,.2f} allowance. Remove the existing entry first if "
+            f"this really is a second, separate credit.",
+        )
     rid = db.add_plaid_redemption(
         benefit_id, abs(txn["amount"]), txn["date"], win.label if win else None,
         f"Plaid (confirmed): {txn['name']}", txn_id)
