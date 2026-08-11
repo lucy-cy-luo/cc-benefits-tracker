@@ -919,3 +919,43 @@ class TestYearNavigation:
                                          "amount": 0, "year": 2025})
         from app import db as d
         assert not [x for x in d.redemptions_for("csr_lyft") if x["date"].startswith("2025-10")]
+
+
+class TestDuplicateWarning:
+    """Auto-matching defers to a hand-logged window, but confirming used to
+    skip that check — which is how the CSR travel credit reached $600 against
+    a $300 annual cap."""
+
+    def test_review_row_reports_what_you_already_logged_by_hand(self, client):
+        from app import main as m
+        # hand-log the whole July window, then have Plaid offer the same credit
+        c = client
+        c.post("/api/period", data={"benefit_id": "amex_gold_dunkin", "index": 6, "amount": 7})
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "dup1", "2026-07-20",
+                                      "Dunkin'", -7.0, False, "{}")
+        import json as j
+        m.db.set_transaction_match("dup1", "needs_review", candidates_json=j.dumps(
+            [{"benefit_id": "amex_gold_dunkin", "benefit_name": "Dunkin' Credit",
+              "confidence": 0.95, "reason": "merchant matched", "window_label": "Jul 2026"}]))
+        row = next(t for t in c.get("/api/state").json()["review_queue"] if t["id"] == "dup1")
+        assert row["candidates"][0]["already_hand_logged"] == pytest.approx(7.0)
+
+    def test_reports_zero_when_the_window_is_untouched(self, client):
+        from app import main as m
+        import json as j
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "clean1", "2026-06-10",
+                                      "Dunkin'", -7.0, False, "{}")
+        m.db.set_transaction_match("clean1", "needs_review", candidates_json=j.dumps(
+            [{"benefit_id": "amex_gold_dunkin", "benefit_name": "Dunkin' Credit",
+              "confidence": 0.95, "reason": "merchant matched", "window_label": "Jun 2026"}]))
+        row = next(t for t in client.get("/api/state").json()["review_queue"] if t["id"] == "clean1")
+        assert row["candidates"][0]["already_hand_logged"] == 0
+
+    def test_a_plaid_sourced_entry_does_not_count_as_hand_logged(self, client):
+        # Otherwise every auto-match would look like a duplicate of itself.
+        from app import main as m
+        m.db.add_plaid_redemption("amex_gold_dunkin", 7.0, "2026-05-10", "May 2026",
+                                  "auto", "sometxn")
+        assert m._window_already_hand_logged(
+            "amex_gold_dunkin", m.CATALOG.benefits["amex_gold_dunkin"],
+            __import__("datetime").date(2026, 5, 10)) == 0

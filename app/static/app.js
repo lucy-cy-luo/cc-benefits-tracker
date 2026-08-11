@@ -450,6 +450,28 @@ function groupRow(g) {
 // with the dollar figure shows on the card view and overview tiles).
 const VERDICT_WORD = { keep: 'KEEP', cancel: 'DROP', pending: 'TBD', incomplete: 'DECIDE' };
 
+// Switching year re-renders the whole view, and the sections above the grid
+// rarely keep the same height between years — a credit that was "needs
+// attention" in one year sits under "done" in another. Left alone the page
+// reflows and the grid you were reading scrolls out of sight. So: pin the
+// element you clicked in, and after the re-render put it back at the same
+// spot on screen.
+async function switchYear(btn, year) {
+  const anchor = btn.closest('.row') || btn.closest('#view');
+  const id = anchor && anchor.id;
+  const before = anchor ? anchor.getBoundingClientRect().top : null;
+  const scrollBefore = window.scrollY;
+  viewYear = year;
+  await load();
+  const el = id ? document.getElementById(id) : null;
+  if (el && before !== null) {
+    // restore the anchor to the exact viewport offset it had
+    window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - before });
+  } else {
+    window.scrollTo({ top: scrollBefore });
+  }
+}
+
 // Year switcher, per grid. It belongs next to the cells it changes: the year
 // only matters once you're actually logging a month, and a page-level control
 // left you switching context before you knew you needed to.
@@ -1041,7 +1063,7 @@ document.addEventListener('click', e => {
   if (act === 'plaidconnect') return plaidConnect(b);
   if (act === 'plaidsync') return plaidSync(b);
   if (act === 'plaiddisconnect') return post('/api/plaid/disconnect/' + b, {});
-  if (act === 'year') { viewYear = parseInt(t.dataset.y, 10); return load(); }
+  if (act === 'year') return switchYear(t, parseInt(t.dataset.y, 10));
   if (act === 'openreview') { reviewOpen = true; return render(); }
   if (act === 'closereview') { reviewOpen = false; return render(); }
   if (act === 'reviewconfirm') return post(`/api/review/${t.dataset.txn}/confirm`, { benefit_id: t.dataset.benefit });
