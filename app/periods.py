@@ -98,7 +98,13 @@ def current_window(benefit: dict, card: dict, today: date) -> Window | None:
 
     if cadence == "annual":
         if anchor == "card_year":
-            renewal = card.get("renewal_date")
+            # A benefit may renew on a different anniversary than the fee.
+            # Real case: this CSR was product-changed, so the fee bills on the
+            # Sep product-change anniversary while the $300 travel credit
+            # renews on the original account-opening anniversary in May.
+            # Falling back to the fee date would promise a fresh $300 in
+            # September that does not actually arrive until May.
+            renewal = benefit.get("anniversary_date") or card.get("renewal_date")
             if not renewal:
                 # Refuse to guess. A card-year benefit without a renewal date
                 # would render a confidently wrong deadline.

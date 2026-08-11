@@ -140,3 +140,36 @@ class TestLiveness:
         sw = {"cadence": "annual", "value": 500, "spend_gate": 75000}
         assert periods.is_live(sw, {"spend_gate_met": False}, date(2026, 7, 16)) is False
         assert periods.is_live(sw, {"spend_gate_met": True}, date(2026, 7, 16)) is True
+
+
+class TestBenefitOwnAnniversary:
+    """A benefit can renew on a different anniversary than the fee bills on.
+
+    Real case: this CSR was product-changed, so the fee bills on the September
+    product-change anniversary while the $300 travel credit renews on the
+    original account-opening anniversary in May. Inheriting the fee date would
+    promise a fresh $300 in September that does not arrive until May.
+    """
+
+    CARD = {"renewal_date": date(2026, 9, 1)}
+    CREDIT = {"cadence": "annual", "period_anchor": "card_year",
+              "anniversary_date": date(2027, 5, 1)}
+
+    def test_uses_the_benefits_own_anniversary_over_the_fee_date(self):
+        w = periods.current_window(self.CREDIT, self.CARD, date(2026, 8, 11))
+        assert w.end == date(2027, 4, 30)          # not Aug 31
+
+    def test_does_not_roll_over_at_the_fee_date(self):
+        # The bug this guards: on Sep 2 the app used to start a fresh card year
+        # and report the full $300 available again.
+        w = periods.current_window(self.CREDIT, self.CARD, date(2026, 9, 2))
+        assert w.end == date(2027, 4, 30)
+
+    def test_rolls_over_at_its_own_anniversary(self):
+        w = periods.current_window(self.CREDIT, self.CARD, date(2027, 5, 2))
+        assert w.end == date(2028, 4, 30)
+
+    def test_falls_back_to_the_card_renewal_when_unset(self):
+        plain = {"cadence": "annual", "period_anchor": "card_year"}
+        w = periods.current_window(plain, self.CARD, date(2026, 8, 11))
+        assert w.end == date(2026, 8, 31)
