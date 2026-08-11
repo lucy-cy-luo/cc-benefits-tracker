@@ -541,6 +541,7 @@ def _cash_channel_view(ch_id, name, cap, year, today, overlap=False, best_use=Fa
         else:
             state = "future"
         cells.append({"index": m - 1, "label": periods.SHORT_LABELS["monthly"][m - 1],
+                      "start": start.isoformat(), "end": end.isoformat(),
                       "allowance": cap, "redeemed": round(amt, 2), "state": state})
     return {
         "id": ch_id, "name": name, "cap": cap,

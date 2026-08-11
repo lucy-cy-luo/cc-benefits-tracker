@@ -651,6 +651,18 @@ def review_queue() -> list[dict]:
         )]
 
 
+def plaid_sourced_in_period(benefit_id: str, start: str, end: str) -> float:
+    """The Plaid-sourced share of a window's redemptions — subtract it from the
+    total to see what you logged by hand."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount),0) AS t FROM redemptions"
+            " WHERE benefit_id=? AND date>=? AND date<=? AND source='plaid'",
+            (benefit_id, start, end),
+        ).fetchone()
+        return float(row["t"])
+
+
 def has_non_plaid_redemption_in_window(benefit_id: str, start: str, end: str) -> bool:
     """The 'manual overrides always win' guard: if the user already logged this
     window by hand, auto-matching must defer to a human review rather than

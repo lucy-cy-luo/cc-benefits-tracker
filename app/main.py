@@ -506,6 +506,24 @@ def bulk_confirm(txn_ids: str = Form(...), benefit_id: str = Form(...)):
     return _state()
 
 
+def _window_already_hand_logged(benefit_id: str, benefit: dict, txn_date: date) -> float:
+    """How much of this window you already logged yourself.
+
+    Auto-matching defers to a hand-logged window, but CONFIRMING used to skip
+    that check — so confirming a credit you'd already entered by hand stacked
+    a second copy silently. Real consequence: the CSR travel credit ended up
+    at $600 against a $300 annual cap, inflating the card's capture. The
+    review UI now surfaces this so the duplicate is visible before you accept.
+    """
+    windows = periods.periods_in_year(benefit.get("cadence", "annual"), txn_date.year)
+    win = next((w for w in windows if w.contains(txn_date)), None)
+    if not win:
+        return 0.0
+    total = db.redeemed_in_period(benefit_id, win.start.isoformat(), win.end.isoformat())
+    plaid = db.plaid_sourced_in_period(benefit_id, win.start.isoformat(), win.end.isoformat())
+    return round(total - plaid, 2)
+
+
 def _confirm_one(txn_id: str, txn: dict, benefit_id: str) -> None:
     benefit = CATALOG.benefits[benefit_id]
     txn_date = date.fromisoformat(txn["date"])
@@ -520,10 +538,18 @@ def _confirm_one(txn_id: str, txn: dict, benefit_id: str) -> None:
 def _review_queue_view() -> list[dict]:
     out = []
     for t in db.review_queue():
+        cands = json.loads(t["candidates"]) if t["candidates"] else []
+        # For each candidate, how much of that window you already logged by
+        # hand — so accepting a duplicate is a visible choice, not a surprise.
+        for cd in cands:
+            b = CATALOG.benefits.get(cd["benefit_id"])
+            cd["already_hand_logged"] = (
+                _window_already_hand_logged(cd["benefit_id"], b, date.fromisoformat(t["date"]))
+                if b else 0.0)
         out.append({
             "id": t["id"], "card_id": t["card_id"], "date": t["date"], "name": t["name"],
             "amount": t["amount"], "match_confidence": t["match_confidence"],
-            "candidates": json.loads(t["candidates"]) if t["candidates"] else [],
+            "candidates": cands,
         })
     return out
 

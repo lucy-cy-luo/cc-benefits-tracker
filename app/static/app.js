@@ -313,7 +313,8 @@ function periodGrid(b) {
     if (c.state !== 'future' && c.state !== 'dead') tot++;
     const dis = (c.state === 'future' || c.state === 'dead');
     const sel = editing && editing.kind === 'period' && editing.id === b.id && editing.index === c.index;
-    return `<button class="mo ${c.state} ${sel ? 'editing' : ''}" ${dis ? 'disabled' : ''}
+    const inMem = inMembershipWindow(c.start, c.end) ? 'inmem' : '';
+    return `<button class="mo ${c.state} ${inMem} ${sel ? 'editing' : ''}" ${dis ? 'disabled' : ''}
         data-act="selectperiod" data-kind="period" data-b="${b.id}" data-i="${c.index}"
         data-cap="${c.allowance}" data-cur="${c.redeemed}"
         data-lbl="${esc(b.name)} · ${esc(c.long_label)}">
@@ -323,6 +324,7 @@ function periodGrid(b) {
   const strip = (editing && editing.kind === 'period' && editing.id === b.id) ? editStrip() : '';
   return `<div class="ptitle"><span>Each ${g.unit.replace(/s$/, '')} tracks separately · click to enter the exact amount</span>
       <b class="tnum">${money(used)} of ${money(b.available)} · ${hit} of ${tot} ${g.unit} used</b></div>
+    ${yearNav()}
     <div class="months ${COLS[g.unit] || ''}">${html}</div>
     ${strip}
     <div class="mgrid-foot">Green = captured · red = missed &amp; past · outlined = open now · faint = upcoming. Click any cell to enter what you actually redeemed, including a partial amount.</div>`;
@@ -335,7 +337,7 @@ function periodGrid(b) {
 function matrix(rows, kind) {
   const n = rows[0].cells.length;
   const cols = `132px repeat(${n},minmax(42px,1fr)) 58px`;
-  let h = `<div class="mxwrap"><div class="mx" style="grid-template-columns:${cols}">`;
+  let h = yearNav() + `<div class="mxwrap"><div class="mx" style="grid-template-columns:${cols}">`;
   h += `<div></div>${rows[0].cells.map(c => `<div class="mx-hd">${c.label}</div>`).join('')}<div class="mx-hd">ytd</div>`;
   for (const r of rows) {
     let tot = 0;
@@ -348,7 +350,8 @@ function matrix(rows, kind) {
       else txt = '';
       const dis = (c.state === 'future' || c.state === 'dead');
       const sel = editing && editing.kind === kind && editing.id === r.key && editing.index === c.index;
-      h += `<button class="mx-cell ${c.state} ${sel ? 'editing' : ''}" ${dis ? 'disabled' : ''}
+      const inMem = (c.start && inMembershipWindow(c.start, c.end)) ? 'inmem' : '';
+      h += `<button class="mx-cell ${c.state} ${inMem} ${sel ? 'editing' : ''}" ${dis ? 'disabled' : ''}
               data-act="${kind === 'cash' ? 'selectcash' : 'selectperiod'}" data-b="${r.key}" data-i="${c.index}"
               data-cap="${c.allowance}" data-cur="${c.redeemed}" data-lbl="${esc(r.label)} · ${esc(c.label)}"
               title="${r.label} · ${c.label}">${txt}</button>`;
@@ -447,23 +450,30 @@ function groupRow(g) {
 // with the dollar figure shows on the card view and overview tiles).
 const VERDICT_WORD = { keep: 'KEEP', cancel: 'DROP', pending: 'TBD', incomplete: 'DECIDE' };
 
-// Year switcher. Shown on card views because that's where the grids live.
-// Anything other than the current year is called out — a past year's verdict
-// is history, not a decision, and shouldn't be mistaken for one.
-function yearNav(c) {
+// Year switcher, per grid. It belongs next to the cells it changes: the year
+// only matters once you're actually logging a month, and a page-level control
+// left you switching context before you knew you needed to.
+function yearNav() {
   const y = STATE.year, cur = STATE.current_year;
-  const m = c && c.membership_year;
-  const spansPrev = m && m.start.slice(0, 4) < String(cur);
-  const hint = (spansPrev && y === cur)
-    ? `<span class="ct">membership year began ${fmtDay(m.start)} — switch to ${cur - 1} to log those months</span>`
-    : '';
+  const m = renderingCard && renderingCard.membership_year;
+  const inPrev = m && m.start.slice(0, 4) < String(cur);
   return `<div class="yearnav">
     <button class="mini ghost" data-act="year" data-y="${y - 1}">◀ ${y - 1}</button>
     <b>${y}</b>
     ${y < cur ? `<button class="mini ghost" data-act="year" data-y="${y + 1}">${y + 1} ▶</button>`
               : `<button class="mini ghost" disabled>${y + 1} ▶</button>`}
     ${y !== cur ? `<span class="pill plan">viewing ${y}</span>` : ''}
-    ${hint}</div>`;
+    ${m ? `<span class="ct">membership year ${fmtDay(m.start)} – ${fmtDay(m.end)}${
+      inPrev && y === cur ? ` · <b>${y - 1} months still count</b>` : ''}</span>` : ''}
+  </div>`;
+}
+
+// Does this window fall inside the membership year the current fee bought?
+// Those are the cells where logging still moves the renewal decision.
+function inMembershipWindow(startIso, endIso) {
+  const m = renderingCard && renderingCard.membership_year;
+  if (!m) return false;
+  return endIso >= m.start && startIso < m.end;
 }
 
 function renderTabs() {
@@ -723,7 +733,10 @@ function feeLine(c) {
     <span class="ct" title="${esc(src)}">${f.verified ? 'confirmed' : 'estimated'}</span></div>${my}`;
 }
 
+let renderingCard = null;
+
 function renderCard(c) {
+  renderingCard = c;
   const g = { attn: [], track: [], rest: [] };
   for (const e of c.entries) {
     const ms = e.kind === 'group' ? e.members : [e];
@@ -756,7 +769,6 @@ function renderCard(c) {
     <div class="focus-hd"><div><h2>${c.name}</h2>${feeLine(c)}
       <div class="sub" style="margin:4px 0 0">${money(c.cost)}/yr${c.au_fee ? ` (${money(c.fee)} + ${money(c.au_fee)} AU)` : ''}${mathLine}</div></div>
       <span class="chip ${c.verdict[0]}">${c.verdict[1]}</span></div>
-    ${yearNav(c)}
     <div style="padding:16px 0 4px">${c.cash ? biltCompositeBar(c) : tierBar(c.available, c.realistic, c.actual, c.cost, countedPointsValue(c))}</div>
     ${c.cash ? `<div class="sub" style="margin:6px 0 0">Card credits <b>+</b> Bilt Cash combined — one card, one fee.</div>
         <div class="group-lbl">Card credits <span class="ct">${c.entries.length}</span></div>
