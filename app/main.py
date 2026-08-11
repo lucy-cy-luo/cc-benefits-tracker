@@ -571,8 +571,29 @@ def digest():
             {"name": c["name"], "annual_cost": c["cost"],
              "available": c["available"], "realistic": c["realistic"],
              "actual": c["actual"], "gap": c["gap"],
-             "verdict": c["verdict"][0], "detail": c["verdict"][1]}
+             "verdict": c["verdict"][0], "detail": c["verdict"][1],
+             # The renewal deadline is the one thing in here that costs money
+             # to miss, so a weekly sweep should lead with it.
+             "fee_posts": (c["fee_schedule"] or {}).get("next_due"),
+             "fee_days_away": (c["fee_schedule"] or {}).get("days_until"),
+             "decide_by": (c["fee_schedule"] or {}).get("decide_by"),
+             "fee_date_confirmed": (c["fee_schedule"] or {}).get("verified"),
+             "membership_year_captured": (c["membership_year"] or {}).get("captured"),
+             "membership_year_covers_fee": (c["membership_year"] or {}).get("covers_fee")}
             for c in s["cards"]
+        ],
+        # Surfaced so an unattended sweep can notice the data went stale
+        # instead of quietly reporting month-old numbers as current.
+        "sync": s["sync_status"],
+        "needs_review": len(s["review_queue"]),
+        "renewals_due": [
+            {"card": c["label"], "fee": c["cost"],
+             "posts": c["fee_schedule"]["next_due"],
+             "days": c["fee_schedule"]["days_until"],
+             "decide_by": c["fee_schedule"]["decide_by"],
+             "verdict": c["verdict"][1]}
+            for c in s["cards"]
+            if (c["fee_schedule"] or {}).get("decision_due")
         ],
     }
 

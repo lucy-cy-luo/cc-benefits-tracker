@@ -339,8 +339,9 @@ class TestPlaidVisibility:
         "amex_plat_saks", "amex_plat_lululemon", "amex_plat_hotel_credit",
         # added on real-data evidence (CSR, 2026-08-04):
         "csr_dining", "csr_stubhub",
-        # the credit posts as "AMEX Airline Fee Reimbursement" (2026-08-10)
-        "amex_plat_airline_fee",
+        # both post as their own credit line, confirmed 2026-08-10:
+        # "AMEX Airline Fee Reimbursement" and "AMEX CLEAR PLUS CREDIT"
+        "amex_plat_airline_fee", "amex_plat_clear",
     }
 
     def test_exactly_the_confirmed_benefits_are_matchable(self):
