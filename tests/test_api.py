@@ -871,3 +871,51 @@ class TestRejectReason:
         assert row["match_status"] == "rejected"
         # "not a credit" and "wrong benefit" are different facts, kept apart
         assert row["reject_reason"] == "not_a_credit"
+
+
+class TestYearNavigation:
+    """A membership year straddles two calendar years, so the earlier months
+    have to be reachable — otherwise they aren't merely blank, they're
+    impossible to log."""
+
+    def test_state_can_render_a_past_year(self, client):
+        s = client.get("/api/state?year=2025").json()
+        assert s["year"] == 2025 and s["current_year"] == 2026
+
+    def test_defaults_to_the_year_today_falls_in(self, client):
+        s = client.get("/api/state").json()
+        assert s["year"] == s["current_year"] == 2026
+
+    def test_grids_render_the_requested_year(self, client):
+        s = client.get("/api/state?year=2025").json()
+        lyft = find(s, "chase_sapphire_reserve", "Lyft Credit")
+        assert lyft["grid"]["cells"][0]["start"].startswith("2025")
+
+    def test_logging_a_past_month_lands_in_that_month(self, client):
+        # Not "today" — otherwise a back-logged month misses the window it
+        # belongs to and the membership-year sum silently under-counts.
+        r = client.post("/api/period", data={"benefit_id": "csr_lyft", "index": 9,
+                                             "amount": 10, "year": 2025}).json()
+        assert r["year"] == 2025
+        lyft = find(r, "chase_sapphire_reserve", "Lyft Credit")
+        assert lyft["grid"]["cells"][9]["redeemed"] == 10
+        from app import db as d
+        assert any(x["date"].startswith("2025-10")
+                   for x in d.redemptions_for("csr_lyft"))
+
+    def test_a_past_month_counts_toward_the_membership_year(self, client):
+        before = next(c for c in client.get("/api/state").json()["cards"]
+                      if c["id"] == "chase_sapphire_reserve")["membership_year"]["captured"]
+        client.post("/api/period", data={"benefit_id": "csr_lyft", "index": 9,
+                                         "amount": 10, "year": 2025})
+        after = next(c for c in client.get("/api/state").json()["cards"]
+                     if c["id"] == "chase_sapphire_reserve")["membership_year"]["captured"]
+        assert after == pytest.approx(before + 10)
+
+    def test_clearing_a_past_month_works_too(self, client):
+        client.post("/api/period", data={"benefit_id": "csr_lyft", "index": 9,
+                                         "amount": 10, "year": 2025})
+        client.post("/api/period", data={"benefit_id": "csr_lyft", "index": 9,
+                                         "amount": 0, "year": 2025})
+        from app import db as d
+        assert not [x for x in d.redemptions_for("csr_lyft") if x["date"].startswith("2025-10")]

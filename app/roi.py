@@ -608,9 +608,18 @@ def _cash_view(catalog, card_id, year, today):
 
 # --- assembly ----------------------------------------------------------------
 
-def build_state(catalog, today: date | None = None) -> dict:
+def build_state(catalog, today: date | None = None, year: int | None = None) -> dict:
+    """`year` renders a calendar year other than the one `today` falls in.
+
+    Needed because a membership year almost always straddles two calendar
+    years — CSR's runs Sep 2025 to Sep 2026 — so with the grids pinned to the
+    current year, the earlier months were not merely blank but unreachable:
+    there was no way to log Sep-Dec 2025 at all. Windows, allowances and
+    valid_from/until still resolve against the year being VIEWED; `today` only
+    decides which cells count as past, open or future.
+    """
     today = today or date.today()
-    year = today.year
+    year = year or today.year
     bstate, cstate = db.all_benefit_state(), db.all_card_state()
 
     cards = []
@@ -719,6 +728,7 @@ def build_state(catalog, today: date | None = None) -> dict:
     return {
         "today": today.isoformat(),
         "year": year,
+        "current_year": today.year,
         "cards": cards,
         "expiring": _expiring(cards, 30),
         "reference": reference,

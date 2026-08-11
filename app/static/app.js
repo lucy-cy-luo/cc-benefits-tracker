@@ -12,6 +12,9 @@ const $ = id => document.getElementById(id);
 
 let STATE = null;
 let active = 'overview';
+// Which calendar year the grids render. A membership year straddles two of
+// them, so the earlier months have to be reachable to be loggable at all.
+let viewYear = null;
 // Only one benefit's detail is open at a time within a card — opening a second
 // one collapses the first back to its summary row, so nothing has to be closed
 // by hand before looking at the next thing.
@@ -25,7 +28,9 @@ let editing = null;
 // --- data ------------------------------------------------------------------
 
 async function load() {
-  STATE = await (await fetch('/api/state')).json();
+  const q = viewYear ? `?year=${viewYear}` : '';
+  STATE = await (await fetch('/api/state' + q)).json();
+  viewYear = STATE.year;
   render();
 }
 
@@ -35,6 +40,7 @@ async function post(url, data) {
   const res = await fetch(url, { method: 'POST', body });
   if (!res.ok) { alert('Could not save: ' + res.status); return; }
   STATE = await res.json();
+  viewYear = STATE.year;
   render();
 }
 
@@ -55,8 +61,8 @@ const card = id => STATE.cards.find(c => c.id === id);
 
 // --- actions ---------------------------------------------------------------
 
-const logPeriod = (bid, i, amount) => post('/api/period', { benefit_id: bid, index: i, amount });
-const logCash = (ch, i, amount) => post('/api/cash', { channel: ch, index: i, amount });
+const logPeriod = (bid, i, amount) => post('/api/period', { benefit_id: bid, index: i, amount, year: viewYear });
+const logCash = (ch, i, amount) => post('/api/cash', { channel: ch, index: i, amount, year: viewYear });
 const setAppl = (bid, v) => post('/api/state/' + bid, { applicable: v === null ? '' : (v ? '1' : '0') });
 const setReal = (bid, v) => post('/api/state/' + bid, { realistic_value: v });
 
@@ -441,6 +447,25 @@ function groupRow(g) {
 // with the dollar figure shows on the card view and overview tiles).
 const VERDICT_WORD = { keep: 'KEEP', cancel: 'DROP', pending: 'TBD', incomplete: 'DECIDE' };
 
+// Year switcher. Shown on card views because that's where the grids live.
+// Anything other than the current year is called out — a past year's verdict
+// is history, not a decision, and shouldn't be mistaken for one.
+function yearNav(c) {
+  const y = STATE.year, cur = STATE.current_year;
+  const m = c && c.membership_year;
+  const spansPrev = m && m.start.slice(0, 4) < String(cur);
+  const hint = (spansPrev && y === cur)
+    ? `<span class="ct">membership year began ${fmtDay(m.start)} — switch to ${cur - 1} to log those months</span>`
+    : '';
+  return `<div class="yearnav">
+    <button class="mini ghost" data-act="year" data-y="${y - 1}">◀ ${y - 1}</button>
+    <b>${y}</b>
+    ${y < cur ? `<button class="mini ghost" data-act="year" data-y="${y + 1}">${y + 1} ▶</button>`
+              : `<button class="mini ghost" disabled>${y + 1} ▶</button>`}
+    ${y !== cur ? `<span class="pill plan">viewing ${y}</span>` : ''}
+    ${hint}</div>`;
+}
+
 function renderTabs() {
   const tabs = [`<button class="tab ${active === 'overview' ? 'active' : ''}" data-go="overview">
       <span class="tname">Overview</span><span style="font-size:11px;color:var(--faint)">all cards</span></button>`];
@@ -731,6 +756,7 @@ function renderCard(c) {
     <div class="focus-hd"><div><h2>${c.name}</h2>${feeLine(c)}
       <div class="sub" style="margin:4px 0 0">${money(c.cost)}/yr${c.au_fee ? ` (${money(c.fee)} + ${money(c.au_fee)} AU)` : ''}${mathLine}</div></div>
       <span class="chip ${c.verdict[0]}">${c.verdict[1]}</span></div>
+    ${yearNav(c)}
     <div style="padding:16px 0 4px">${c.cash ? biltCompositeBar(c) : tierBar(c.available, c.realistic, c.actual, c.cost, countedPointsValue(c))}</div>
     ${c.cash ? `<div class="sub" style="margin:6px 0 0">Card credits <b>+</b> Bilt Cash combined — one card, one fee.</div>
         <div class="group-lbl">Card credits <span class="ct">${c.entries.length}</span></div>
@@ -1003,6 +1029,7 @@ document.addEventListener('click', e => {
   if (act === 'plaidconnect') return plaidConnect(b);
   if (act === 'plaidsync') return plaidSync(b);
   if (act === 'plaiddisconnect') return post('/api/plaid/disconnect/' + b, {});
+  if (act === 'year') { viewYear = parseInt(t.dataset.y, 10); return load(); }
   if (act === 'openreview') { reviewOpen = true; return render(); }
   if (act === 'closereview') { reviewOpen = false; return render(); }
   if (act === 'reviewconfirm') return post(`/api/review/${t.dataset.txn}/confirm`, { benefit_id: t.dataset.benefit });

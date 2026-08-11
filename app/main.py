@@ -59,8 +59,8 @@ def _today() -> date:
     return date.fromisoformat(override) if override else date.today()
 
 
-def _state():
-    s = roi.build_state(CATALOG, _today())
+def _state(year: int | None = None):
+    s = roi.build_state(CATALOG, _today(), year)
     s["plaid_items"] = _plaid_items_view()
     s["review_queue"] = _review_queue_view()
     s["sync_status"] = _sync_status(s["plaid_items"], _today())
@@ -121,14 +121,15 @@ def dashboard(request: Request):
 
 
 @app.get("/api/state")
-def api_state():
-    return _state()
+def api_state(year: int = None):
+    return _state(year)
 
 
 # --- actions (each returns the full fresh state so the UI can re-render) ------
 
 @app.post("/api/period")
-def log_period(benefit_id: str = Form(...), index: int = Form(...), amount: float = Form(None)):
+def log_period(benefit_id: str = Form(...), index: int = Form(...), amount: float = Form(None),
+               year: int = Form(None)):
     """Set exactly what was redeemed in one window of a periodic credit.
 
     Idempotent "set", not "toggle": always clears whatever was logged for that
@@ -140,21 +141,24 @@ def log_period(benefit_id: str = Form(...), index: int = Form(...), amount: floa
     """
     b = _benefit(benefit_id)
     today = _today()
-    wins = periods.periods_in_year(b.get("cadence"), today.year)
+    year = year or today.year
+    wins = periods.periods_in_year(b.get("cadence"), year)
     if not (0 <= index < len(wins)):
         raise HTTPException(400, "period index out of range")
     w = wins[index]
     start, end = w.start.isoformat(), w.end.isoformat()
 
     db.delete_redemptions_in_window(benefit_id, start, end)
-    cap = periods.period_allowance(b, today.year, index)
+    cap = periods.period_allowance(b, year, index)
     # Clamped, not rejected: a fat-fingered 250 instead of 25 should self-correct
     # to the period's real cap, not fail the save and lose what was typed.
     amt = cap if amount is None else min(cap, max(0.0, amount))
     if amt > 0:
+        # Date it inside the window being logged, not "today" — logging a past
+        # month must land in that month or the membership-year sum misses it.
         when = min(max(today, w.start), w.end).isoformat()
         db.add_redemption(benefit_id, round(amt, 2), when, w.label, "logged from grid")
-    return _state()
+    return _state(year)
 
 
 @app.post("/api/redeem")
@@ -186,7 +190,8 @@ def set_state(benefit_id: str, enrolled: str = Form(None), applicable: str = For
 
 
 @app.post("/api/cash")
-def log_cash(channel: str = Form(...), index: int = Form(...), amount: float = Form(None)):
+def log_cash(channel: str = Form(...), index: int = Form(...), amount: float = Form(None),
+             year: int = Form(None)):
     """Set exactly what was burned in one month of one Bilt Cash channel.
 
     Same idempotent "set" semantics as /api/period, for the same reason: a
@@ -206,7 +211,7 @@ def log_cash(channel: str = Form(...), index: int = Form(...), amount: float = F
         cap = custom["monthly_cap"]
     if not (0 <= index < 12):
         raise HTTPException(400, "month index out of range")
-    year = _today().year
+    year = year or _today().year
     start, end = periods.month_bounds(year, index + 1)
     s, e = start.isoformat(), end.isoformat()
     db.delete_cash_in_window(channel, s, e)
@@ -214,7 +219,7 @@ def log_cash(channel: str = Form(...), index: int = Form(...), amount: float = F
     if amt > 0:
         when = min(max(_today(), start), end).isoformat()
         db.add_bilt_cash("burn", float(amt), when, channel, "logged from grid")
-    return _state()
+    return _state(year)
 
 
 @app.post("/api/cash/earn")
