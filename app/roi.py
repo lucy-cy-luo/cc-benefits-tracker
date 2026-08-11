@@ -206,6 +206,70 @@ def _fee_schedule(card: dict, card_id: str, cost: float, today: date) -> dict:
     }
 
 
+def _windows_for(benefit: dict, year: int):
+    """(window, allowance) pairs for one benefit in one calendar year.
+
+    per_booking credits have no periodic grid but do expire at year end, so
+    they get a synthetic annual window — otherwise they'd vanish from the
+    membership-year total despite being real, losable value.
+    """
+    cadence = benefit.get("cadence")
+    wins = periods.periods_in_year(cadence, year)
+    if wins:
+        for i, w in enumerate(wins):
+            yield w, periods.period_allowance(benefit, year, i)
+    elif cadence == "per_booking":
+        yield periods.Window(date(year, 1, 1), date(year, 12, 31), str(year)), \
+              float(benefit.get("value") or 0)
+
+
+def _membership_year(catalog, card_id: str, fee: dict, has_cash: bool) -> dict | None:
+    """Value captured between one annual fee charge and the next.
+
+    Counted by REDEMPTION DATE, not by which window the credit belonged to.
+    An earlier version attributed each window to the fee year containing its
+    deadline — tidy for counting windows (exactly 12 monthly / 4 quarterly /
+    2 semiannual / 1 annual), but it measures the wrong thing. On real CSR
+    data it discarded $1,504 genuinely received inside the fee year, the $600
+    travel credit and $300 StubHub among them, because those windows expire
+    after the renewal date. It reported a card that clearly covers its fee as
+    failing to.
+
+    The fee is the only denominator the decision needs — "did the $795 I paid
+    come back before I'm charged again" — so no `available` is computed here,
+    which also sidesteps the attribution problem entirely.
+
+    Calendar-year figures are untouched: they answer "when do my credits
+    reset", which is what the grids are for.
+    """
+    if not fee.get("next_due"):
+        return None
+    end = date.fromisoformat(fee["next_due"])
+    try:
+        start = end.replace(year=end.year - 1)
+    except ValueError:                        # Feb 29
+        start = end.replace(year=end.year - 1, day=28)
+    s, e = start.isoformat(), end.isoformat()
+
+    captured = sum(db.redeemed_in_period(b["id"], s, e)
+                   for b in catalog.benefits_for(card_id))
+    # Bilt Cash burns are dated dollar captures too, so they belong here.
+    # Points are NOT included — they aren't dollars and the card view reports
+    # them separately; the label says so rather than quietly folding them in.
+    if has_cash:
+        spec = catalog.bilt_cash or {}
+        for ch in spec.get("channels", []):
+            if ch.get("monthly_cap"):
+                captured += db.cash_burned(ch["id"], s, e)
+        for cc in db.all_custom_channels():
+            captured += db.cash_burned(cc["id"], s, e)
+
+    cost = fee.get("cost") or 0
+    return {"start": s, "end": e, "captured": round(captured, 2),
+            "fee": cost, "covers_fee": captured >= cost,
+            "excludes_points": bool(has_cash)}
+
+
 def _statement_window(year: int, month: int, close_day: int) -> tuple[date, date]:
     """The qualifying window for `month`'s rent points: the statement period
     ending on close_day OF that month, i.e. [prev month close_day+1 .. month
@@ -612,6 +676,7 @@ def build_state(catalog, today: date | None = None) -> dict:
         verdict_counts_points = thesis in ("points", "hybrid")
         verdict_value = tot_real + (bonus_points_value if verdict_counts_points else 0.0)
 
+        fee_sched = _fee_schedule(card, cid, cost, today)
         entries = _group_entries(views, catalog, today)
         # A large unredeemed Bilt Cash balance is a real, dollar-denominated
         # thing to act on even when its Dec 31 deadline is months out — it
@@ -635,7 +700,8 @@ def build_state(catalog, today: date | None = None) -> dict:
             "unresolved": unresolved,
             "unresolved_value": round(unresolved_value, 2),
             "verdict": verdict(verdict_value, cost, unresolved, thesis, has_points_data),
-            "fee_schedule": _fee_schedule(card, cid, cost, today),
+            "fee_schedule": fee_sched,
+            "membership_year": _membership_year(catalog, cid, {**fee_sched, "cost": cost}, bool(cash)),
             "verdict_value": round(verdict_value, 2),
             "attention": attention,
             "cash": cash,

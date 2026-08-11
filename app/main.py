@@ -469,25 +469,47 @@ def confirm_review(txn_id: str, benefit_id: str = Form(...)):
     if not benefit:
         raise HTTPException(404, f"unknown benefit {benefit_id}")
 
-    txn_date = date.fromisoformat(txn["date"])
-    windows = periods.periods_in_year(benefit.get("cadence", "annual"), txn_date.year)
-    win = next((w for w in windows if w.contains(txn_date)), None)
-
-    rid = db.add_plaid_redemption(
-        benefit_id, abs(txn["amount"]), txn["date"], win.label if win else None,
-        f"Plaid (confirmed): {txn['name']}", txn_id,
-    )
-    db.set_transaction_match(txn_id, "confirmed", benefit_id, 1.0, txn["candidates"], rid)
+    _confirm_one(txn_id, txn, benefit_id)
     return _state()
 
 
 @app.post("/api/review/{txn_id}/reject")
-def reject_review(txn_id: str):
+def reject_review(txn_id: str, reason: str = Form(None)):
+    """`reason` distinguishes 'not a credit at all' (a refund) from 'wrong
+    benefit'. Same outcome today, different signal — the first is what would
+    teach the matcher which descriptions to stop offering."""
     txn = db.plaid_transaction(txn_id)
     if not txn:
         raise HTTPException(404, f"unknown transaction {txn_id}")
-    db.set_transaction_match(txn_id, "rejected")
+    db.set_transaction_match(txn_id, "rejected", reject_reason=reason)
     return _state()
+
+
+@app.post("/api/review/bulk-confirm")
+def bulk_confirm(txn_ids: str = Form(...), benefit_id: str = Form(...)):
+    """Accept several near-identical suggestions at once. A queue of six
+    Dunkin' matches is one decision, not six."""
+    if benefit_id not in CATALOG.benefits:
+        raise HTTPException(404, f"unknown benefit {benefit_id}")
+    done = 0
+    for tid in [t for t in txn_ids.split(",") if t]:
+        txn = db.plaid_transaction(tid)
+        if not txn or txn["match_status"] != "needs_review":
+            continue
+        _confirm_one(tid, txn, benefit_id)
+        done += 1
+    return _state()
+
+
+def _confirm_one(txn_id: str, txn: dict, benefit_id: str) -> None:
+    benefit = CATALOG.benefits[benefit_id]
+    txn_date = date.fromisoformat(txn["date"])
+    windows = periods.periods_in_year(benefit.get("cadence", "annual"), txn_date.year)
+    win = next((w for w in windows if w.contains(txn_date)), None)
+    rid = db.add_plaid_redemption(
+        benefit_id, abs(txn["amount"]), txn["date"], win.label if win else None,
+        f"Plaid (confirmed): {txn['name']}", txn_id)
+    db.set_transaction_match(txn_id, "confirmed", benefit_id, 1.0, txn["candidates"], rid)
 
 
 def _review_queue_view() -> list[dict]:

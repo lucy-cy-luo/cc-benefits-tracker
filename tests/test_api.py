@@ -784,3 +784,89 @@ class TestFeeChargeDetection:
         self._rows(monkeypatch, [
             {"date": "2026-01-16", "name": "ANNUAL FEE REFUND", "amount": -895.0}])
         assert roi._find_last_fee_charge("plat", [895.0]) is None
+
+
+class TestMembershipYear:
+    """The fee buys a membership year, so that's the span the keep/cancel call
+    should be judged over — separately from the calendar grids."""
+
+    def test_window_runs_between_consecutive_fee_charges(self, client):
+        for c in client.get("/api/state").json()["cards"]:
+            m, f = c["membership_year"], c["fee_schedule"]
+            assert m["end"] == f["next_due"]
+            assert m["start"] < m["end"]
+
+    def test_compares_capture_against_the_fee_not_an_allowance(self, client):
+        for c in client.get("/api/state").json()["cards"]:
+            m = c["membership_year"]
+            assert m["fee"] == c["cost"]
+            assert m["covers_fee"] == (m["captured"] >= m["fee"])
+
+    def test_counts_by_redemption_date_not_window_deadline(self, client, monkeypatch):
+        # Regression: an earlier version attributed each window to the fee year
+        # containing its DEADLINE. On real CSR data that discarded $1,504
+        # genuinely received inside the fee year — the $600 travel credit and
+        # $300 StubHub among them — because those windows expire after the
+        # renewal date, and reported a covered card as failing.
+        from app import roi
+        from app.catalog import Catalog
+        cat = Catalog()
+        fee = {"next_due": "2026-09-01", "cost": 795.0}
+        seen = {}
+        def fake(bid, s, e):
+            seen["range"] = (s, e)
+            return 100.0 if bid == "csr_travel_credit" else 0.0
+        monkeypatch.setattr(roi.db, "redeemed_in_period", fake)
+        monkeypatch.setattr(roi.db, "cash_burned", lambda *a: 0.0)
+        m = roi._membership_year(cat, "chase_sapphire_reserve", fee, False)
+        # queried once per benefit across the whole fee year, not per window
+        assert seen["range"] == ("2025-09-01", "2026-09-01")
+        assert m["captured"] > 0
+
+    def test_points_are_excluded_and_flagged_on_cards_with_cash(self, client):
+        cards = {c["id"]: c for c in client.get("/api/state").json()["cards"]}
+        assert cards["bilt_palladium"]["membership_year"]["excludes_points"] is True
+        assert cards["amex_gold"]["membership_year"]["excludes_points"] is False
+
+
+class TestBulkConfirm:
+    def test_confirms_several_at_once(self, client, monkeypatch):
+        from app import main as m
+        c = client
+        # two synthetic review rows on the same benefit
+        for i, d in enumerate(("2026-07-05", "2026-07-06")):
+            m.db.upsert_plaid_transaction("amex_gold", "item-1", f"bulk{i}", d,
+                                          "Dunkin'", -7.0, False, "{}")
+            m.db.set_transaction_match(f"bulk{i}", "needs_review")
+        resp = c.post("/api/review/bulk-confirm",
+                      data={"txn_ids": "bulk0,bulk1", "benefit_id": "amex_gold_dunkin"})
+        assert resp.status_code == 200
+        assert resp.json()["review_queue"] == []
+        for i in range(2):
+            assert m.db.plaid_transaction(f"bulk{i}")["match_status"] == "confirmed"
+
+    def test_skips_anything_not_awaiting_review(self, client):
+        from app import main as m
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "already", "2026-07-05",
+                                      "Dunkin'", -7.0, False, "{}")
+        m.db.set_transaction_match("already", "rejected")
+        client.post("/api/review/bulk-confirm",
+                    data={"txn_ids": "already", "benefit_id": "amex_gold_dunkin"})
+        assert m.db.plaid_transaction("already")["match_status"] == "rejected"
+
+    def test_rejects_an_unknown_benefit(self, client):
+        assert client.post("/api/review/bulk-confirm",
+                           data={"txn_ids": "x", "benefit_id": "nope"}).status_code == 404
+
+
+class TestRejectReason:
+    def test_records_why_it_was_rejected(self, client):
+        from app import main as m
+        m.db.upsert_plaid_transaction("amex_gold", "item-1", "rej1", "2026-07-05",
+                                      "United Airlines", -40.0, False, "{}")
+        m.db.set_transaction_match("rej1", "needs_review")
+        client.post("/api/review/rej1/reject", data={"reason": "not_a_credit"})
+        row = m.db.plaid_transaction("rej1")
+        assert row["match_status"] == "rejected"
+        # "not a credit" and "wrong benefit" are different facts, kept apart
+        assert row["reject_reason"] == "not_a_credit"

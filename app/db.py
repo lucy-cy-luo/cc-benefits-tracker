@@ -181,6 +181,10 @@ CREATE INDEX IF NOT EXISTS idx_plaid_txn_status ON plaid_transactions(match_stat
 # Each entry is (table, column, ddl-fragment); applied only if the column is missing.
 _MIGRATIONS = [
     ("redemptions", "plaid_transaction_id", "TEXT"),
+    # "this isn't a credit at all" and "right credit, wrong benefit" are
+    # different facts. Collapsing them loses the signal that would let the
+    # matcher learn which descriptions are refunds.
+    ("plaid_transactions", "reject_reason", "TEXT"),
 ]
 
 
@@ -607,13 +611,14 @@ def plaid_transaction(txn_id: str) -> dict | None:
 
 def set_transaction_match(txn_id: str, match_status: str, matched_benefit_id: str | None = None,
                           match_confidence: float | None = None, candidates_json: str | None = None,
-                          redemption_id: int | None = None) -> None:
+                          redemption_id: int | None = None, reject_reason: str | None = None) -> None:
     with connect() as conn:
         conn.execute(
             "UPDATE plaid_transactions SET match_status=?, matched_benefit_id=?,"
-            " match_confidence=?, candidates=?, redemption_id=?, updated_at=? WHERE id=?",
+            " match_confidence=?, candidates=?, redemption_id=?, reject_reason=?, updated_at=?"
+            " WHERE id=?",
             (match_status, matched_benefit_id, match_confidence, candidates_json,
-             redemption_id, date.today().isoformat(), txn_id),
+             redemption_id, reject_reason, date.today().isoformat(), txn_id),
         )
 
 

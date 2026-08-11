@@ -487,27 +487,74 @@ function renderOverview() {
     <div class="cardgrid">${cards}</div>`;
 }
 
-// Plaid matches that weren't confident enough to auto-apply — surfaced here
-// because they're cross-card, same as "expiring." Each candidate is its own
-// button so confirming never requires guessing which benefit was meant.
+// Plaid matches that weren't confident enough to auto-apply.
+//
+// Collapsed by default. It used to sit expanded above the card verdicts and
+// occupied half the Overview — an inbox outranking the dashboard. It also only
+// ever offered the matcher's own guesses, so when every guess was wrong the
+// only move was to reject and lose the credit entirely; that is what happened
+// to two real airline reimbursements.
+let reviewOpen = false;
+
 function reviewSection() {
   const q = STATE.review_queue || [];
   if (!q.length) return '';
-  const rows = q.map(t => {
-    const cardLabel = (STATE.cards.find(c => c.id === t.card_id) || {}).label || t.card_id;
-    const cands = t.candidates.map(cd => `
-      <button class="mini ghost" data-act="reviewconfirm" data-txn="${t.id}" data-benefit="${cd.benefit_id}"
-        title="${esc(cd.reason)}">${esc(cd.benefit_name)} · ${Math.round(cd.confidence * 100)}%</button>`).join('');
-    return `<div class="act" style="cursor:default;align-items:flex-start;flex-wrap:wrap">
-      <span class="amt tnum">${money(Math.abs(t.amount))}</span>
-      <span class="who">${esc(t.name)}<small>${fmtDay(t.date)} · ${esc(cardLabel)}</small></span>
-      <span style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">${cands}
-        <button class="mini ghost" data-act="reviewreject" data-txn="${t.id}">Not this</button></span>
-    </div>`;
-  }).join('');
+  const total = q.reduce((s, t) => s + Math.abs(t.amount), 0);
+  if (!reviewOpen) {
+    return `<button class="reviewbar" data-act="openreview">
+      <span>⚠ <b>${q.length}</b> transaction${q.length === 1 ? '' : 's'} to review
+        <span class="ct">${money(total)}</span></span><span>→</span></button>`;
+  }
+  // Group identical suggestions: six Dunkin' matches are one decision, not six.
+  const groups = {};
+  q.forEach(t => {
+    const best = (t.candidates || []).slice().sort((a, b) => b.confidence - a.confidence)[0];
+    const key = `${t.card_id}|${t.name}|${best ? best.benefit_id : 'none'}`;
+    (groups[key] = groups[key] || { items: [], best, name: t.name, card: t.card_id }).items.push(t);
+  });
+  const rows = Object.values(groups).map(g => reviewGroup(g)).join('');
   return `<div class="actnow" style="border-left-color:var(--warn);margin-bottom:14px">
     <div class="actnow-hd" style="background:var(--warn-bg);color:var(--warn)">
-      <span>Needs review · Plaid found these but wasn't sure</span><span class="tnum">${q.length}</span></div>${rows}</div>`;
+      <span>Needs review · Plaid found these but wasn't sure</span>
+      <button class="mini ghost" data-act="closereview">collapse</button></div>${rows}</div>`;
+}
+
+function reviewGroup(g) {
+  const card = STATE.cards.find(c => c.id === g.card) || {};
+  const n = g.items.length;
+  const ids = g.items.map(t => t.id).join(',');
+  const sum = g.items.reduce((s, t) => s + Math.abs(t.amount), 0);
+  const when = n === 1 ? fmtDay(g.items[0].date)
+    : `${fmtDay(g.items[n - 1].date)}–${fmtDay(g.items[0].date)}`;
+  const suggested = g.best
+    ? `<button class="mini" data-act="reviewconfirm" data-txn="${g.items[0].id}"
+         data-benefit="${g.best.benefit_id}" title="${esc(g.best.reason || '')}"
+         >${esc(g.best.benefit_name)} · ${Math.round(g.best.confidence * 100)}%</button>`
+    : '<span class="es-cap">no suggestion</span>';
+  const bulk = (n > 1 && g.best)
+    ? `<button class="mini" data-act="bulkconfirm" data-txns="${ids}"
+         data-benefit="${g.best.benefit_id}">Accept all ${n}</button>` : '';
+  return `<div class="act reviewrow">
+    <span class="amt tnum">${money(sum)}${n > 1 ? `<small>×${n}</small>` : ''}</span>
+    <span class="who">${esc(g.name)}<small>${when} · ${esc(card.label || g.card)}</small></span>
+    <span class="revacts">
+      ${suggested}${bulk}
+      ${benefitPicker(card, ids)}
+      <button class="mini ghost" data-act="reviewreject" data-txns="${ids}"
+        data-reason="not_a_credit" title="A refund or return — not a statement credit">Not a credit</button>
+    </span></div>`;
+}
+
+// Every credit on the card, with how much of the current window is already
+// used — so a wrong suggestion can be corrected rather than only discarded.
+function benefitPicker(card, ids) {
+  const opts = (card.entries || []).flatMap(e => e.kind === 'group' ? e.members : [e])
+    .filter(m => m.applicable !== false && !m.expired)
+    .map(m => `<option value="${m.id}">${esc(m.name)} — ${m.remaining > 0
+        ? money(m.remaining) + ' left this period' : 'fully used this period'}</option>`)
+    .join('');
+  return `<select class="pickben" data-txns="${ids}">
+    <option value="">choose a different credit…</option>${opts}</select>`;
 }
 
 function cashSection(c) {
@@ -636,9 +683,19 @@ function feeLine(c) {
   const src = f.verified
     ? `from your last fee charge on ${fmtDay(f.last_charged)}`
     : 'estimated \u2014 not yet seen in your transactions';
+  const m = c.membership_year;
+  // The fee buys a membership year, so that — not the calendar — is the span
+  // the keep/cancel call should be judged over. Shown only here, next to the
+  // decision; every grid stays on the real reset windows.
+  const my = m ? `<div class="feeline ${m.covers_fee ? 'ok' : 'crit'}">
+      Membership year ${fmtDay(m.start)} \u2013 ${fmtDay(m.end)}:
+      <b>${money(m.captured)}</b> captured against the ${money(m.fee)} fee
+      ${m.covers_fee ? '\u2014 covered' : `\u2014 <b>${money(m.fee - m.captured)} short</b>`}
+      ${m.excludes_points ? '<span class="ct" title="Points are reported separately on this card">credits + cash only</span>' : ''}
+    </div>` : '';
   return `<div class="feeline ${cls}">${money(c.cost)} fee posts <b>${when}</b> \u00b7 ${d} days
     ${d <= 45 ? `\u00b7 <b>decide by ${fmtDay(f.decide_by)}</b>` : ''}
-    <span class="ct" title="${esc(src)}">${f.verified ? 'confirmed' : 'estimated'}</span></div>`;
+    <span class="ct" title="${esc(src)}">${f.verified ? 'confirmed' : 'estimated'}</span></div>${my}`;
 }
 
 function renderCard(c) {
@@ -946,8 +1003,23 @@ document.addEventListener('click', e => {
   if (act === 'plaidconnect') return plaidConnect(b);
   if (act === 'plaidsync') return plaidSync(b);
   if (act === 'plaiddisconnect') return post('/api/plaid/disconnect/' + b, {});
+  if (act === 'openreview') { reviewOpen = true; return render(); }
+  if (act === 'closereview') { reviewOpen = false; return render(); }
   if (act === 'reviewconfirm') return post(`/api/review/${t.dataset.txn}/confirm`, { benefit_id: t.dataset.benefit });
-  if (act === 'reviewreject') return post(`/api/review/${t.dataset.txn}/reject`, {});
+  if (act === 'bulkconfirm') return post('/api/review/bulk-confirm', { txn_ids: t.dataset.txns, benefit_id: t.dataset.benefit });
+  if (act === 'reviewreject') {
+    const ids = (t.dataset.txns || '').split(',').filter(Boolean);
+    return Promise.all(ids.map(id => postRaw(`/api/review/${id}/reject`, { reason: t.dataset.reason || '' })))
+      .then(load);
+  }
+});
+
+// Assigning a reviewed transaction to a credit the matcher didn't suggest.
+document.addEventListener('change', e => {
+  const sel = e.target.closest('select.pickben');
+  if (!sel || !sel.value) return;
+  const ids = (sel.dataset.txns || '').split(',').filter(Boolean);
+  post('/api/review/bulk-confirm', { txn_ids: ids.join(','), benefit_id: sel.value });
 });
 
 // Enter saves, Escape cancels, while focus is in the amount input.
