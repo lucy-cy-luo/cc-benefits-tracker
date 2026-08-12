@@ -44,3 +44,8 @@ venv/
 
 # ngrok traffic policy — contains a password
 scripts/ngrok-policy.yml
+
+# Session handoff notes + screenshots — reference the ngrok hostname, local
+# paths, and real dashboard data. The repo is public; these stay local.
+HANDOFF.md
+*.png
